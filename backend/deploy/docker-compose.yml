@@ -1,0 +1,109 @@
+# 线上编排：postgres / redis / api / worker / beat
+# 遵循 AGENTS.md：顶层 name 统一项目名前缀；自建镜像 image: warden-stock-quant-<service>；
+# PostgreSQL 数据 bind mount 到项目内 ./pgdata（已加入 .gitignore）。
+name: warden-stock-quant
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${PG_USER:-warden}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-warden}
+      POSTGRES_DB: ${PG_DB:-warden_quant}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    ports:
+      # 宿主端口错开（warden-stock-data 已占用 5432）；容器内部仍为 5432
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-warden}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    ports:
+      # 宿主端口错开（warden-stock-data 已占用 6379）；容器内部仍为 6379
+      - "6380:6379"
+
+  # 一次性数据库迁移；api/worker 等待其成功完成后再启动。
+  migrate:
+    image: warden-stock-quant-api
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: alembic upgrade head
+    env_file:
+      - ../.env
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: warden-stock-quant-api
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: gunicorn -k uvicorn.workers.UvicornWorker app.main:app -b 0.0.0.0:8000
+    env_file:
+      - ../.env
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+
+  worker:
+    image: warden-stock-quant-worker
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: celery -A app.tasks.celery_app worker -Q backtest,factor,data,trade -l info
+    env_file:
+      - ../.env
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    image: warden-stock-quant-beat
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: celery -A app.tasks.celery_app beat -l info
+    env_file:
+      - ../.env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      - redis

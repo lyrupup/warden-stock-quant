@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "warden-stock-quant-backend"
+version = "0.1.0"
+description = "守望者量化交易系统后端（Python + FastAPI），M1 用户与多租户体系骨架"
+readme = "README.md"
+# 文档目标运行时为 Python 3.11；当前开发机仅提供 3.9，故放宽下限以便本地安装与单测。
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "warden-stock-quant" }]
+
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "gunicorn>=21.2",
+    "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.13",
+    "asyncpg>=0.29",
+    "pydantic>=2.6",
+    "pydantic[email]>=2.6",
+    "pydantic-settings>=2.2",
+    "celery[redis]>=5.3",
+    "redis>=5.0",
+    "httpx>=0.27",
+    "passlib[argon2]>=1.7.4",
+    "argon2-cffi>=23.1",
+    "python-jose[cryptography]>=3.3",
+    "structlog>=24.1",
+    "prometheus-client>=0.20",
+    "python-multipart>=0.0.9",
+    "cryptography>=42.0",
+]
+
+# ---------------------------------------------------------------------------
+# 量化重依赖（后续阶段 M2+ 才安装，现在不要装：vnpy/backtrader 体积大且 macOS 易失败）
+# 在对应里程碑再加入 dependencies 或 optional-dependencies：
+#   "pandas>=2.2",
+#   "pyarrow>=15.0",
+#   "duckdb>=0.10",
+#   "numpy>=1.26",
+#   "scipy>=1.12",
+#   "statsmodels>=0.14",
+#   "backtrader>=1.9.78",
+#   "vnpy>=3.9",            # 实盘执行内核（自托管合规环境）
+#   "quantstats>=0.0.62",
+#   "empyrical-reloaded>=0.5",
+#   "alphalens-reloaded>=0.4",
+# ---------------------------------------------------------------------------
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "ruff>=0.4",
+    "mypy>=1.9",
+    "aiosqlite>=0.20",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.ruff]
+# 实际运行解释器为 3.9，故工具链目标对齐 3.9，确保语法与 lint 一致。
+target-version = "py39"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = ["B008"]  # FastAPI 依赖注入需要在默认参数里调用 Depends()
+
+[tool.ruff.lint.per-file-ignores]
+"app/features/*/models.py" = ["F401"]
+"**/__init__.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_unused_ignores = false
+ignore_missing_imports = true
+plugins = []
+check_untyped_defs = true
+exclude = ["alembic/"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"

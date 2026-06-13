@@ -1,0 +1,21 @@
+# 本地开发依赖：仅启动 postgres + redis，api/worker/beat 本地直跑（热重载）。
+name: warden-stock-quant-dev
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${PG_USER:-warden}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-warden}
+      POSTGRES_DB: ${PG_DB:-warden_quant}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    ports:
+      # 宿主端口错开（warden-stock-data 已占用 5432）
+      - "5433:5432"
+
+  redis:
+    image: redis:7
+    ports:
+      # 宿主端口错开（warden-stock-data 已占用 6379）
+      - "6380:6379"
