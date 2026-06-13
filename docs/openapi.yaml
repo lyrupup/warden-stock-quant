@@ -456,24 +456,50 @@ paths:
       responses: { "200": { $ref: "#/components/responses/Ok" } }
 
   # ==================== Reports ====================
-  /backtests/{id}/report:
-    parameters: [{ $ref: "#/components/parameters/IdPath" }, { name: format, in: query, schema: { type: string, enum: [html, pdf], default: html } }]
+  /backtests/{id}/analysis:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
     get:
       tags: [Reports]
-      summary: 绩效报告
+      summary: 扩展绩效分析（月度收益/回撤/归因等）
       responses:
-        "200": { description: 报告内容（html）或下载（pdf）}
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/ReportAnalysis" } }
+  /backtests/{id}/report:
+    parameters:
+      - { $ref: "#/components/parameters/IdPath" }
+      - name: format
+        in: query
+        schema: { type: string, enum: [html, json], default: html }
+    get:
+      tags: [Reports]
+      summary: 绩效报告（HTML 导出或 JSON 完整报告）
+      responses:
+        "200":
+          description: HTML 附件或 JSON 报告体
   /reports/compare:
     post:
       tags: [Reports]
-      summary: 多回测对比
+      summary: 多回测绩效对比
       requestBody:
+        required: true
         content:
           application/json:
-            schema:
-              type: object
-              properties: { backtest_ids: { type: array, items: { type: integer } } }
-      responses: { "200": { $ref: "#/components/responses/Ok" } }
+            schema: { $ref: "#/components/schemas/CompareBacktestsRequest" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/CompareReport" } }
   /backtests/{id}/share:
     parameters: [{ $ref: "#/components/parameters/IdPath" }]
     post:
@@ -1130,6 +1156,88 @@ components:
         is_metrics: { $ref: "#/components/schemas/BacktestMetrics" }
         oos_metrics: { $ref: "#/components/schemas/BacktestMetrics" }
         rank: { type: integer }
+    ReportAnalysis:
+      type: object
+      properties:
+        benchmark_metrics:
+          type: object
+          properties:
+            alpha: { type: number, nullable: true }
+            beta: { type: number, nullable: true }
+            info_ratio: { type: number, nullable: true }
+        monthly_returns:
+          type: array
+          items:
+            type: object
+            properties:
+              year: { type: integer }
+              month: { type: integer }
+              return: { type: number }
+        drawdown_series:
+          type: array
+          items:
+            type: object
+            properties:
+              trade_date: { type: string, format: date }
+              drawdown: { type: number, nullable: true }
+        rolling_sharpe:
+          type: array
+          items:
+            type: object
+            properties:
+              trade_date: { type: string, format: date }
+              sharpe: { type: number, nullable: true }
+        return_distribution:
+          type: array
+          items:
+            type: object
+            properties:
+              bin_start: { type: number }
+              bin_end: { type: number }
+              count: { type: integer }
+        stock_attribution:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              total_pnl: { type: number }
+              trade_count: { type: integer }
+        concentration:
+          type: object
+          properties:
+            avg_max_weight: { type: number, nullable: true }
+            avg_holdings: { type: number, nullable: true }
+    CompareBacktestsRequest:
+      type: object
+      required: [backtest_ids]
+      properties:
+        backtest_ids:
+          type: array
+          items: { type: integer }
+          minItems: 2
+          maxItems: 10
+    CompareReport:
+      type: object
+      properties:
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              backtest_id: { type: integer }
+              name: { type: string, nullable: true }
+              strategy_name: { type: string, nullable: true }
+              strategy_version: { type: integer, nullable: true }
+              date_from: { type: string, format: date }
+              date_to: { type: string, format: date }
+              metrics: { $ref: "#/components/schemas/BacktestMetrics" }
+              benchmark_metrics:
+                type: object
+                properties:
+                  alpha: { type: number, nullable: true }
+                  beta: { type: number, nullable: true }
+                  info_ratio: { type: number, nullable: true }
     EquityPoint:
       type: object
       properties:
