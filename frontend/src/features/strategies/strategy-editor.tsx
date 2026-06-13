@@ -158,7 +158,7 @@ export function StrategyEditor({ strategyId, template }: TStrategyEditorProps) {
         <CardHeader>
           <CardTitle>{isNew ? "新建配置式策略" : `编辑策略 · v${detailQuery.data?.latest_version ?? 1}`}</CardTitle>
           <CardDescription>
-            通过表单配置信号积木、股票池与再平衡规则；保存将生成不可变新版本。
+            通过表单配置信号积木、默认股票池与再平衡规则；保存将生成不可变新版本。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -186,8 +186,8 @@ export function StrategyEditor({ strategyId, template }: TStrategyEditorProps) {
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
-                <FieldLabel hint="策略的选股范围：全市场、指数成分股，或自定义股票列表。">
-                  股票池
+                <FieldLabel hint="策略的「默认股票池」，仅作为新建回测时的预填建议，可在每次回测中覆盖。它不是策略逻辑的一部分，真正生效的股票池以每次回测自身的选择为准。可选：全市场、指数成分股、自定义列表。">
+                  默认股票池
                 </FieldLabel>
                 <select
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"

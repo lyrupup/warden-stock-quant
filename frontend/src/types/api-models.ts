@@ -178,3 +178,121 @@ export type TStrategyValidateResult = {
   valid: boolean;
   errors: string[];
 };
+
+/** 回测状态机 */
+export type TBacktestStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
+
+/** 成本配置 */
+export type TCostConfig = {
+  commission_rate?: number;
+  commission_min?: number;
+  stamp_tax_rate?: number;
+  slippage_type?: "none" | "pct" | "tick" | "volume";
+  slippage_value?: number;
+};
+
+/** 创建回测请求 */
+export type TBacktestCreate = {
+  name?: string;
+  strategy_version_id: number;
+  params?: Record<string, unknown>;
+  universe?: TUniverse;
+  date_from: string;
+  date_to: string;
+  init_capital: number;
+  benchmark?: string;
+  adjust?: string;
+  cost_config?: TCostConfig;
+};
+
+/** 回测 */
+export type TBacktest = {
+  id: number;
+  name?: string;
+  status: TBacktestStatus;
+  progress: string | number;
+  job_id?: string;
+  strategy_version_id: number;
+  strategy_id?: number | null;
+  strategy_name?: string | null;
+  strategy_version?: number | null;
+  date_from: string;
+  date_to: string;
+  init_capital: string | number;
+  benchmark: string;
+  adjust: string;
+  error?: string;
+  created_at?: string;
+  finished_at?: string;
+};
+
+/** 回测绑定的策略版本快照 */
+export type TBacktestStrategy = {
+  strategy_version_id: number;
+  strategy_id?: number | null;
+  strategy_name?: string | null;
+  version?: number | null;
+  type?: "config" | "code" | null;
+  description?: string | null;
+  config?: TStrategyConfig;
+  universe?: TUniverse;
+  params?: Record<string, unknown>;
+  created_at?: string | null;
+};
+
+/** 回测绩效指标 */
+export type TBacktestMetrics = {
+  total_return?: string | number;
+  annual_return?: string | number;
+  volatility?: string | number;
+  sharpe?: string | number;
+  sortino?: string | number;
+  calmar?: string | number;
+  max_drawdown?: string | number;
+  mdd_from?: string;
+  mdd_to?: string;
+  win_rate?: string | number;
+  profit_factor?: string | number;
+  turnover?: string | number;
+  alpha?: string | number;
+  beta?: string | number;
+  info_ratio?: string | number;
+};
+
+/** 净值点 */
+export type TEquityPoint = {
+  trade_date: string;
+  nav?: string | number;
+  benchmark_nav?: string | number;
+  drawdown?: string | number;
+};
+
+/** 回测成交 */
+export type TBacktestTrade = {
+  id: number;
+  trade_date: string;
+  code: string;
+  side: "buy" | "sell";
+  price?: string | number;
+  qty: number;
+  amount?: string | number;
+  commission?: string | number;
+  tax?: string | number;
+  pnl?: string | number;
+};
+
+/** 回测持仓 */
+export type TBacktestPosition = {
+  trade_date: string;
+  code: string;
+  qty: number;
+  price?: string | number;
+  market_value?: string | number;
+  weight?: string | number;
+};
+
+/** 异步任务受理返回 */
+export type TJobAccepted = {
+  id: number;
+  job_id: string;
+};

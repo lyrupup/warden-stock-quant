@@ -40,7 +40,6 @@ export function AppRouter() {
           <Route path="/strategies" element={<StrategiesPage />} />
           <Route path="/strategies/:id" element={<StrategiesPage />} />
           <Route path="/backtests" element={<BacktestsPage />} />
-          <Route path="/backtests/new" element={<BacktestsPage />} />
           <Route path="/backtests/:id" element={<BacktestsPage />} />
           <Route path="/factors" element={<FactorsPage />} />
           <Route path="/factors/:id" element={<FactorsPage />} />
