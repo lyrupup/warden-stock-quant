@@ -16,6 +16,7 @@ from app.core.engine.backtest.cost import (
     round_lot,
 )
 from app.core.engine.backtest.metrics import compute_metrics
+from app.core.engine.backtest.signals import compute_hold_states, compute_ma_trend_layers
 from app.core.engine.backtest.types import (
     BacktestEngineInput,
     BacktestEngineOutput,
@@ -42,22 +43,58 @@ class _Portfolio:
     holdings: dict[str, _Holding] = field(default_factory=dict)
 
 
+@dataclass
+class _PyramidState:
+    """单标的金字塔加仓状态机。"""
+
+    active: bool = False
+    entry_index: int = -1
+    added: int = 0  # 已加仓档数
+
+
 def run_backtest(
     inp: BacktestEngineInput,
     on_progress: Optional[ProgressCallback] = None,
     should_cancel: Optional[CancelCallback] = None,
 ) -> BacktestEngineOutput:
-    """执行日频回测（首期支持 ma_cross + equal_weight）。"""
+    """执行日频回测（支持 ma_cross/ma_trend/rsi/bollinger/macd + equal_weight）。"""
     compiler = ConfigStrategyCompiler(inp.strategy_config, inp.params)
     if not compiler.supported():
         raise ValueError(f"暂不支持的信号类型: {compiler.signal_type}")
 
-    calendar = _filter_calendar(inp.calendar, inp.date_from, inp.date_to)
+    # 信号需在含预热期的完整日历上计算指标，再裁剪到回测区间执行
+    full_calendar = sorted(inp.calendar)
+    calendar = _filter_calendar(full_calendar, inp.date_from, inp.date_to)
     if len(calendar) < 2:
         raise ValueError("回测区间交易日不足")
+    cal_index = {d: j for j, d in enumerate(full_calendar)}
 
-    fast, slow = compiler.ma_cross_periods()
-    states = _compute_ma_states(inp.bars_by_code, calendar, fast, slow)
+    def _align(arr: np.ndarray) -> np.ndarray:
+        return np.array([arr[cal_index[d]] for d in calendar], dtype=bool)
+
+    use_pyramid = compiler.is_pyramid and compiler.signal_type == "ma_trend"
+    pyramid_states: dict[str, _PyramidState] = {}
+    entry_states: dict[str, np.ndarray] = {}
+    add_states: dict[str, np.ndarray] = {}
+    trend_states: dict[str, np.ndarray] = {}
+    scale_in: dict = {}
+    states: dict[str, np.ndarray] = {}
+
+    if use_pyramid:
+        scale_in = compiler.scale_in()
+        layers = compute_ma_trend_layers(
+            compiler.primary_signal, compiler.params, inp.bars_by_code, full_calendar
+        )
+        for code, lyr in layers.items():
+            entry_states[code] = _align(lyr["entry"])
+            add_states[code] = _align(lyr["add"])
+            trend_states[code] = _align(lyr["trend"])
+            pyramid_states[code] = _PyramidState()
+    else:
+        states_full = compute_hold_states(
+            compiler.primary_signal, compiler.params, inp.bars_by_code, full_calendar
+        )
+        states = {code: _align(st) for code, st in states_full.items()}
 
     portfolio = _Portfolio(cash=inp.init_capital)
     trades: list[TradeRecord] = []
@@ -87,8 +124,11 @@ def run_backtest(
             )
             pending_targets = {}
 
-        # 盘中止损止盈（以收盘价检查）
-        _apply_stops(dt, portfolio, inp, compiler, trades, calendar, i)
+        # 盘中止损止盈（以收盘价检查；金字塔观察期用更严止损、确认后启用移动止盈）
+        _apply_stops(
+            dt, portfolio, inp, compiler, trades, calendar, i,
+            pyramid_states=pyramid_states if use_pyramid else None,
+        )
 
         # 日终估值
         close_px = _close_prices(inp.bars_by_code, dt)
@@ -111,9 +151,15 @@ def run_backtest(
 
         # 收盘信号 → 下一交易日开盘执行
         if _is_rebalance_day(dt, calendar, i, compiler.rebalance_freq) and i < len(calendar) - 1:
-            pending_targets = _target_weights(
-                dt, states, compiler.max_n, portfolio, calendar, i
-            )
+            if use_pyramid:
+                pending_targets = _pyramid_targets(
+                    i, entry_states, add_states, trend_states,
+                    pyramid_states, portfolio, scale_in, compiler.max_n,
+                )
+            else:
+                pending_targets = _target_weights(
+                    dt, states, compiler.max_n, portfolio, calendar, i
+                )
 
         if on_progress:
             on_progress(round(100.0 * (i + 1) / len(calendar), 2))
@@ -130,41 +176,6 @@ class BacktestCanceledError(Exception):
 
 def _filter_calendar(calendar: list[date], start: date, end: date) -> list[date]:
     return [d for d in calendar if start <= d <= end]
-
-
-def _compute_ma_states(
-    bars_by_code: dict[str, BarData],
-    calendar: list[date],
-    fast: int,
-    slow: int,
-) -> dict[str, np.ndarray]:
-    """每个标的在 calendar 上 fast>slow 的布尔状态。"""
-    states: dict[str, np.ndarray] = {}
-    for code, bars in bars_by_code.items():
-        arr = np.zeros(len(calendar), dtype=bool)
-        date_to_close = {d: bars.close[j] for j, d in enumerate(bars.dates)}
-        closes = np.array([date_to_close.get(d, np.nan) for d in calendar], dtype=float)
-        valid = np.isfinite(closes)
-        if np.sum(valid) < slow:
-            states[code] = arr
-            continue
-        fast_ma = _rolling_mean_on_calendar(closes, fast)
-        slow_ma = _rolling_mean_on_calendar(closes, slow)
-        bullish = (fast_ma > slow_ma) & np.isfinite(fast_ma) & np.isfinite(slow_ma)
-        arr = bullish
-        states[code] = arr
-    return states
-
-
-def _rolling_mean_on_calendar(values: np.ndarray, window: int) -> np.ndarray:
-    out = np.full(len(values), np.nan)
-    for i in range(len(values)):
-        if i + 1 < window:
-            continue
-        chunk = values[i - window + 1 : i + 1]
-        if np.all(np.isfinite(chunk)):
-            out[i] = np.mean(chunk)
-    return out
 
 
 def _is_rebalance_day(dt: date, calendar: list[date], i: int, freq: str) -> bool:
@@ -200,6 +211,57 @@ def _target_weights(
     targets = {code: 0.0 for code in portfolio.holdings}
     for code in picks:
         targets[code] = w
+    return targets
+
+
+def _pyramid_targets(
+    i: int,
+    entry_states: dict[str, np.ndarray],
+    add_states: dict[str, np.ndarray],
+    trend_states: dict[str, np.ndarray],
+    pstates: dict[str, _PyramidState],
+    portfolio: _Portfolio,
+    scale_in: dict,
+    max_n: int,
+) -> dict[str, float]:
+    """金字塔目标权重：建仓→观察→分批加仓→趋势破位离场。
+
+    单标的目标权重 = min(init_weight + 已加档数 × add_weight, 1.0)；同时持仓数受
+    max_n 约束；现金不足由撮合层自然限制。
+    """
+    init_w = scale_in["init_weight"]
+    add_w = scale_in["add_weight"]
+    add_steps = scale_in["add_steps"]
+    observe_days = scale_in["observe_days"]
+    targets: dict[str, float] = {}
+    active_count = sum(1 for s in pstates.values() if s.active)
+
+    for code in sorted(pstates.keys()):
+        s = pstates[code]
+        entry = bool(entry_states[code][i]) if i < len(entry_states[code]) else False
+        add = bool(add_states[code][i]) if i < len(add_states[code]) else False
+        trend = bool(trend_states[code][i]) if i < len(trend_states[code]) else False
+
+        if s.active:
+            if not trend:
+                # 趋势排列破位 → 清仓离场
+                s.active = False
+                s.entry_index = -1
+                s.added = 0
+                targets[code] = 0.0
+                active_count -= 1
+                continue
+            # 满足触发且过观察期 → 加仓一档
+            if s.added < add_steps and add and (i - s.entry_index) >= observe_days:
+                s.added += 1
+            targets[code] = min(init_w + s.added * add_w, 1.0)
+        else:
+            if entry and active_count < max_n:
+                s.active = True
+                s.entry_index = i
+                s.added = 0
+                active_count += 1
+                targets[code] = init_w
     return targets
 
 
@@ -419,11 +481,13 @@ def _apply_stops(
     trades: list[TradeRecord],
     calendar: list[date],
     i: int,
+    pyramid_states: Optional[dict[str, "_PyramidState"]] = None,
 ) -> None:
     prices = _close_prices(inp.bars_by_code, dt)
     stop_loss = compiler.stop_loss
     take_profit = compiler.take_profit
     trailing = compiler.trailing
+    observe_stop_loss = compiler.observe_stop_loss
     for code, h in list(portfolio.holdings.items()):
         if h.qty <= 0 or h.avail_qty <= 0:
             continue
@@ -433,12 +497,27 @@ def _apply_stops(
         h.high_price = max(h.high_price, price)
         ret = (price - h.cost_price) / h.cost_price if h.cost_price > 0 else 0.0
         drawdown_from_high = (price - h.high_price) / h.high_price if h.high_price > 0 else 0.0
+
+        # 金字塔：观察期（未加仓）用更严止损；确认加仓后才启用移动止盈
+        eff_stop_loss = stop_loss
+        eff_trailing = trailing
+        if pyramid_states is not None:
+            ps = pyramid_states.get(code)
+            in_observe = ps is None or ps.added == 0
+            if in_observe:
+                if observe_stop_loss is not None:
+                    eff_stop_loss = observe_stop_loss
+                eff_trailing = None  # 观察期不启用移动止盈
+
         should_sell = False
-        if stop_loss is not None and ret <= -stop_loss:
+        if eff_stop_loss is not None and ret <= -eff_stop_loss:
             should_sell = True
         if take_profit is not None and ret >= take_profit:
             should_sell = True
-        if trailing is not None and drawdown_from_high <= -trailing:
+        if eff_trailing is not None and drawdown_from_high <= -eff_trailing:
             should_sell = True
         if should_sell:
             _sell(dt, code, h.avail_qty, price, h, portfolio, inp.cost, trades)
+            if pyramid_states is not None and code in pyramid_states:
+                # 止损离场后重置金字塔状态，允许后续再次建仓
+                pyramid_states[code] = _PyramidState()

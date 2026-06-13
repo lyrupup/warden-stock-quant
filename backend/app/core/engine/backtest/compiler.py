@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.engine.backtest.signals import is_supported
+
 
 class ConfigStrategyCompiler:
     """解析 M3 配置式策略，供模拟器消费。"""
@@ -23,6 +25,34 @@ class ConfigStrategyCompiler:
     @property
     def signal_type(self) -> str:
         return str(self._signal_type)
+
+    @property
+    def primary_signal(self) -> dict[str, Any]:
+        return self._primary
+
+    @property
+    def params(self) -> dict[str, Any]:
+        return self._params
+
+    @property
+    def observe_stop_loss(self) -> float | None:
+        v = self._stop.get("observe_stop_loss")
+        return float(v) if v is not None else None
+
+    @property
+    def is_pyramid(self) -> bool:
+        return self.scheme == "pyramid"
+
+    def scale_in(self) -> dict[str, Any]:
+        """金字塔加仓参数（含默认值）。"""
+        si = self._position.get("scale_in") or {}
+        return {
+            "init_weight": float(si.get("init_weight", 0.4)),
+            "observe_days": int(si.get("observe_days", 3)),
+            "add_steps": int(si.get("add_steps", 2)),
+            "add_weight": float(si.get("add_weight", 0.3)),
+            "trigger": str(si.get("trigger", "medium_align")),
+        }
 
     @property
     def rebalance_freq(self) -> str:
@@ -59,4 +89,4 @@ class ConfigStrategyCompiler:
         return fast, slow
 
     def supported(self) -> bool:
-        return self._signal_type in ("ma_cross",)
+        return is_supported(str(self._signal_type))
