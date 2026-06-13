@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.engine.report.analysis import build_report_analysis
 from app.core.engine.report.html_renderer import render_html_report
+from app.core.engine.report.pdf_renderer import render_pdf_report
 from app.core.errors import NotFoundError, ValidationFailedError
 from app.features.backtests.repository import BacktestRepository
 from app.features.backtests.schema import BacktestMetricsView, BacktestView
 from app.features.backtests.service import BacktestService
+from app.features.reports.models import ReportShare
+from app.features.reports.repository import ReportShareRepository
 from app.features.reports.schema import (
     BacktestReportView,
     BenchmarkMetricsView,
@@ -20,6 +25,8 @@ from app.features.reports.schema import (
     CompareReportView,
     CompareRowView,
     ReportAnalysisView,
+    ShareLinkRequest,
+    ShareLinkView,
 )
 from app.features.strategies.repository import StrategyRepository
 
@@ -30,6 +37,7 @@ class ReportService:
         self._bt_repo = BacktestRepository(session)
         self._bt_service = BacktestService(session)
         self._strategy_repo = StrategyRepository(session)
+        self._share_repo = ReportShareRepository(session)
 
     async def get_analysis(self, user_id: int, backtest_id: int) -> ReportAnalysisView:
         await self._require_succeeded(user_id, backtest_id)
@@ -46,48 +54,8 @@ class ReportService:
         return BacktestReportView(backtest=bt_view, metrics=metrics, analysis=analysis)
 
     async def render_html(self, user_id: int, backtest_id: int) -> str:
-        report = await self.get_report(user_id, backtest_id)
-        bt = report.backtest
-        m = report.metrics
-        a = report.analysis
-
-        def _tone_pct(v: Optional[Any], invert: bool = False) -> str:
-            if v is None:
-                return ""
-            try:
-                n = float(v)
-            except (TypeError, ValueError):
-                return ""
-            pos = n >= 0 if not invert else n <= 0
-            return "pos" if pos else "neg"
-
-        metric_cards = [
-            {"label": "总收益率", "value": _fmt_pct(m.total_return), "tone": _tone_pct(m.total_return)},
-            {"label": "年化收益", "value": _fmt_pct(m.annual_return), "tone": _tone_pct(m.annual_return)},
-            {"label": "最大回撤", "value": _fmt_pct(m.max_drawdown), "tone": "neg"},
-            {"label": "夏普比率", "value": _fmt_num(m.sharpe), "tone": ""},
-            {"label": "索提诺比率", "value": _fmt_num(m.sortino), "tone": ""},
-            {"label": "卡玛比率", "value": _fmt_num(m.calmar), "tone": ""},
-            {"label": "年化波动", "value": _fmt_pct(m.volatility), "tone": ""},
-            {"label": "胜率", "value": _fmt_pct(m.win_rate), "tone": ""},
-            {"label": "盈亏比", "value": _fmt_num(m.profit_factor), "tone": ""},
-            {"label": "换手率", "value": _fmt_num(m.turnover), "tone": ""},
-        ]
-
-        return render_html_report(
-            {
-                "title": bt.name or f"回测报告 #{bt.id}",
-                "date_from": str(bt.date_from),
-                "date_to": str(bt.date_to),
-                "init_capital": f"{float(bt.init_capital):,.0f}",
-                "benchmark": bt.benchmark,
-                "strategy_name": bt.strategy_name,
-                "strategy_version": bt.strategy_version,
-                "metric_cards": metric_cards,
-                "analysis": a.model_dump(by_alias=True),
-                "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-            }
-        )
+        ctx = await self._report_context(user_id, backtest_id)
+        return render_html_report(ctx)
 
     async def compare(self, user_id: int, payload: CompareBacktestsRequest) -> CompareReportView:
         rows: list[CompareRowView] = []
@@ -113,6 +81,74 @@ class ReportService:
                 )
             )
         return CompareReportView(rows=rows)
+
+    async def render_pdf(self, user_id: int, backtest_id: int) -> bytes:
+        ctx = await self._report_context(user_id, backtest_id)
+        return render_pdf_report(ctx)
+
+    async def create_share_link(
+        self, user_id: int, backtest_id: int, payload: ShareLinkRequest
+    ) -> ShareLinkView:
+        await self._require_succeeded(user_id, backtest_id)
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=payload.expires_in)
+        share = ReportShare(
+            backtest_id=backtest_id,
+            user_id=user_id,
+            token=token,
+            expires_at=expires_at,
+        )
+        await self._share_repo.create(share)
+        settings = get_settings()
+        base = getattr(settings, "public_base_url", None) or "http://localhost:5173"
+        url = f"{base.rstrip('/')}/share/reports/{token}"
+        return ShareLinkView(url=url, token=token, expires_at=expires_at)
+
+    async def get_shared_report_html(self, token: str) -> str:
+        row = await self._share_repo.get_valid(token, datetime.now(timezone.utc))
+        if row is None:
+            raise NotFoundError("分享链接无效或已过期")
+        return await self.render_html(row.user_id, row.backtest_id)
+
+    async def _report_context(self, user_id: int, backtest_id: int) -> dict[str, Any]:
+        report = await self.get_report(user_id, backtest_id)
+        bt = report.backtest
+        m = report.metrics
+
+        def _tone_pct(v: Optional[Any], invert: bool = False) -> str:
+            if v is None:
+                return ""
+            try:
+                n = float(v)
+            except (TypeError, ValueError):
+                return ""
+            pos = n >= 0 if not invert else n <= 0
+            return "pos" if pos else "neg"
+
+        metric_cards = [
+            {"label": "总收益率", "value": _fmt_pct(m.total_return), "tone": _tone_pct(m.total_return)},
+            {"label": "年化收益", "value": _fmt_pct(m.annual_return), "tone": _tone_pct(m.annual_return)},
+            {"label": "最大回撤", "value": _fmt_pct(m.max_drawdown), "tone": "neg"},
+            {"label": "夏普比率", "value": _fmt_num(m.sharpe), "tone": ""},
+            {"label": "索提诺比率", "value": _fmt_num(m.sortino), "tone": ""},
+            {"label": "卡玛比率", "value": _fmt_num(m.calmar), "tone": ""},
+            {"label": "年化波动", "value": _fmt_pct(m.volatility), "tone": ""},
+            {"label": "胜率", "value": _fmt_pct(m.win_rate), "tone": ""},
+            {"label": "盈亏比", "value": _fmt_num(m.profit_factor), "tone": ""},
+            {"label": "换手率", "value": _fmt_num(m.turnover), "tone": ""},
+        ]
+        return {
+            "title": bt.name or f"回测报告 #{bt.id}",
+            "date_from": str(bt.date_from),
+            "date_to": str(bt.date_to),
+            "init_capital": f"{float(bt.init_capital):,.0f}",
+            "benchmark": bt.benchmark,
+            "strategy_name": bt.strategy_name,
+            "strategy_version": bt.strategy_version,
+            "metric_cards": metric_cards,
+            "analysis": report.analysis.model_dump(by_alias=True),
+            "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        }
 
     async def _require_succeeded(self, user_id: int, backtest_id: int) -> None:
         bt = await self._bt_service.get_backtest(user_id, backtest_id)

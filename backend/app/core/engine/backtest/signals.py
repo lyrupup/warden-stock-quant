@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-SUPPORTED_SIGNALS = ("ma_cross", "ma_trend", "rsi", "bollinger", "macd")
+SUPPORTED_SIGNALS = ("ma_cross", "ma_trend", "rsi", "bollinger", "macd", "factor_rank")
 
 
 def _closes_series(bars, calendar: list) -> pd.Series:
@@ -226,6 +226,56 @@ def compute_ma_trend_layers(
             "trend": entry_align.fillna(False).to_numpy(dtype=bool),
         }
     return result
+
+
+def compute_factor_rank_states(
+    signal: dict[str, Any],
+    matrix: dict[str, np.ndarray],
+    calendar: list,
+    trade_date,
+    top: float,
+) -> dict[str, bool]:
+    """截面因子排名选股：返回某日被选中的标的。"""
+    if trade_date not in calendar:
+        return {code: False for code in matrix}
+    idx = calendar.index(trade_date)
+    scores: list[tuple[str, float]] = []
+    for code, arr in matrix.items():
+        if idx >= len(arr):
+            continue
+        v = arr[idx]
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            continue
+        scores.append((code, float(v)))
+    if not scores:
+        return {code: False for code in matrix}
+    scores.sort(key=lambda x: x[1], reverse=True)
+    n_pick = max(1, int(len(scores) * top))
+    picked = {c for c, _ in scores[:n_pick]}
+    return {code: code in picked for code in matrix}
+
+
+def select_factor_rank_codes(
+    matrix: dict[str, np.ndarray],
+    calendar: list,
+    day_index: int,
+    top: float,
+    max_n: int,
+) -> list[str]:
+    """回测用：按因子值选取 top 比例标的（最多 max_n）。"""
+    scores: list[tuple[str, float]] = []
+    for code, arr in matrix.items():
+        if day_index >= len(arr):
+            continue
+        v = arr[day_index]
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            continue
+        scores.append((code, float(v)))
+    if not scores:
+        return []
+    scores.sort(key=lambda x: x[1], reverse=True)
+    n_pick = max(1, int(len(scores) * top))
+    return [c for c, _ in scores[: min(n_pick, max_n)]]
 
 
 def is_supported(signal_type: str) -> bool:

@@ -71,6 +71,7 @@ async def build_engine_input(
     params: Optional[dict[str, Any]],
     benchmark: str = "000300",
     max_codes: int = 50,
+    user_id: Optional[int] = None,
 ) -> BacktestEngineInput:
     feed = PgDataFeed(session)
     warmup = date_from - timedelta(days=120)
@@ -91,6 +92,30 @@ async def build_engine_input(
     bench_rows = await feed.get_bars(benchmark, warmup, date_to, adjust=adjust)
     benchmark_bars = bar_row_to_data(benchmark, bench_rows) if bench_rows else None
 
+    factor_matrix = None
+    factor_top = 0.1
+    signals = (strategy_config or {}).get("signals") or []
+    if signals and signals[0].get("type") == "factor_rank":
+        from app.core.engine.factor.compute import compute_factor_matrix
+
+        sig = signals[0]
+        factor_name = str(sig.get("factor", "momentum_20"))
+        factor_top = float(sig.get("top", 0.1))
+        direction = 1
+        factor_params = params
+        if user_id is not None:
+            from app.features.factors.repository import FactorRepository
+
+            repo = FactorRepository(session)
+            custom = await repo.get_by_name(user_id, factor_name)
+            if custom is not None:
+                factor_name = custom.expr or custom.name
+                factor_params = custom.params
+                direction = custom.direction
+        factor_matrix = compute_factor_matrix(
+            bars_by_code, calendar, factor_name, factor_params, direction
+        )
+
     return BacktestEngineInput(
         date_from=date_from,
         date_to=date_to,
@@ -103,4 +128,6 @@ async def build_engine_input(
         benchmark_bars=benchmark_bars,
         bars_by_code=bars_by_code,
         calendar=calendar,
+        factor_matrix=factor_matrix,
+        factor_top=factor_top,
     )

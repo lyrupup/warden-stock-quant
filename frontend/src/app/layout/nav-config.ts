@@ -41,6 +41,7 @@ export const navGroups: TNavGroup[] = [
       { to: "/datasets", labelKey: "nav.datasets", icon: Database },
       { to: "/strategies", labelKey: "nav.strategies", icon: LineChart },
       { to: "/backtests", labelKey: "nav.backtests", icon: FlaskConical },
+      { to: "/backtests/compare", labelKey: "nav.backtestCompare", icon: FlaskConical },
       { to: "/optimizations", labelKey: "nav.optimizations", icon: SlidersHorizontal },
       { to: "/factors", labelKey: "nav.factors", icon: Sigma },
     ],

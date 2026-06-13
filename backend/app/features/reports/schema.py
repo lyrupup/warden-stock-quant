@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -85,3 +85,13 @@ class CompareRowView(BaseModel):
 
 class CompareReportView(BaseModel):
     rows: list[CompareRowView]
+
+
+class ShareLinkRequest(BaseModel):
+    expires_in: int = Field(default=86400, ge=60, le=604800)
+
+
+class ShareLinkView(BaseModel):
+    url: str
+    token: str
+    expires_at: datetime

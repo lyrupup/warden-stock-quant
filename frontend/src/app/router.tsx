@@ -8,7 +8,7 @@ import { DashboardPage } from "@/features/dashboard";
 import { AccountPage } from "@/features/account";
 import { DatasetsPage } from "@/features/datasets";
 import { StrategiesPage } from "@/features/strategies";
-import { BacktestsPage, OptimizationsPage } from "@/features/backtests";
+import { BacktestsPage, BacktestComparePage, OptimizationsPage } from "@/features/backtests";
 import { FactorsPage } from "@/features/factors";
 import { PortfoliosPage } from "@/features/portfolios";
 import { TradingPage } from "@/features/trading";
@@ -40,6 +40,7 @@ export function AppRouter() {
           <Route path="/strategies" element={<StrategiesPage />} />
           <Route path="/strategies/:id" element={<StrategiesPage />} />
           <Route path="/backtests" element={<BacktestsPage />} />
+          <Route path="/backtests/compare" element={<BacktestComparePage />} />
           <Route path="/backtests/:id" element={<BacktestsPage />} />
           <Route path="/optimizations" element={<OptimizationsPage />} />
           <Route path="/optimizations/:id" element={<OptimizationsPage />} />
