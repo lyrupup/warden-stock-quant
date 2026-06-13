@@ -296,3 +296,73 @@ export type TJobAccepted = {
   id: number;
   job_id: string;
 };
+
+/** 创建参数寻优请求 */
+export type TOptimizationCreate = {
+  name?: string;
+  strategy_version_id: number;
+  /** 参数空间：{ fast: [3,5,8], slow: [15,20,30] } */
+  param_space: Record<string, (number | string)[]>;
+  method: "grid" | "random";
+  n_iter?: number;
+  objective: string;
+  oos_split?: number;
+  universe?: TUniverse;
+  date_from: string;
+  date_to: string;
+  init_capital: number;
+  benchmark?: string;
+  adjust?: string;
+  cost_config?: TCostConfig;
+};
+
+/** 寻优汇总（过拟合诊断） */
+export type TOptimizationSummary = {
+  objective: string;
+  tested: number;
+  best_params?: Record<string, unknown>;
+  best_value?: number | null;
+  value_mean?: number;
+  value_std?: number;
+  stability?: number;
+  best_oos_value?: number | null;
+  oos_consistent?: boolean;
+  overfit_warning?: boolean;
+  note?: string;
+};
+
+/** 寻优任务 */
+export type TOptimization = {
+  id: number;
+  name?: string;
+  status: TBacktestStatus;
+  progress: string | number;
+  job_id?: string;
+  strategy_version_id: number;
+  strategy_name?: string | null;
+  strategy_version?: number | null;
+  method: "grid" | "random";
+  objective: string;
+  oos_split: string | number;
+  total_combos: number;
+  param_space: Record<string, (number | string)[]>;
+  date_from: string;
+  date_to: string;
+  init_capital: string | number;
+  benchmark: string;
+  adjust: string;
+  summary?: TOptimizationSummary | null;
+  error?: string;
+  created_at?: string;
+  finished_at?: string;
+};
+
+/** 单个参数组合结果 */
+export type TOptimizationResult = {
+  id: number;
+  params: Record<string, number | string>;
+  objective_value?: string | number | null;
+  is_metrics?: TBacktestMetrics | null;
+  oos_metrics?: TBacktestMetrics | null;
+  rank?: number | null;
+};

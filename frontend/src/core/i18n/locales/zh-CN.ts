@@ -31,6 +31,7 @@ export const zhCN = {
     datasets: "数据集",
     strategies: "策略",
     backtests: "回测",
+    optimizations: "参数寻优",
     factors: "因子研究",
     portfolios: "组合",
     tradingCenter: "交易中心",
