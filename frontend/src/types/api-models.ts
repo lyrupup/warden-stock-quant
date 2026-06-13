@@ -366,3 +366,66 @@ export type TOptimizationResult = {
   oos_metrics?: TBacktestMetrics | null;
   rank?: number | null;
 };
+
+/** M5 相对基准指标 */
+export type TBenchmarkMetrics = {
+  alpha?: number | null;
+  beta?: number | null;
+  info_ratio?: number | null;
+};
+
+/** M5 月度收益 */
+export type TMonthlyReturn = {
+  year: number;
+  month: number;
+  return: number;
+};
+
+/** M5 滚动夏普点 */
+export type TRollingSharpePoint = {
+  trade_date: string;
+  sharpe?: number | null;
+};
+
+/** M5 收益分布桶 */
+export type TReturnDistBin = {
+  bin_start: number;
+  bin_end: number;
+  count: number;
+};
+
+/** M5 个股盈亏归因 */
+export type TStockAttribution = {
+  code: string;
+  total_pnl: number;
+  trade_count: number;
+};
+
+/** M5 持仓集中度 */
+export type TConcentration = {
+  avg_max_weight?: number | null;
+  avg_holdings?: number | null;
+};
+
+/** M5 扩展绩效分析 */
+export type TReportAnalysis = {
+  benchmark_metrics: TBenchmarkMetrics;
+  monthly_returns: TMonthlyReturn[];
+  drawdown_series: { trade_date: string; drawdown?: number | null }[];
+  rolling_sharpe: TRollingSharpePoint[];
+  return_distribution: TReturnDistBin[];
+  stock_attribution: TStockAttribution[];
+  concentration: TConcentration;
+};
+
+/** M5 多回测对比行 */
+export type TCompareRow = {
+  backtest_id: number;
+  name?: string | null;
+  strategy_name?: string | null;
+  strategy_version?: number | null;
+  date_from: string;
+  date_to: string;
+  metrics: TBacktestMetrics;
+  benchmark_metrics: TBenchmarkMetrics;
+};

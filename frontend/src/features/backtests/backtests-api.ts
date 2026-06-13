@@ -12,6 +12,8 @@ import type {
   TOptimizationCreate,
   TOptimizationResult,
   TPageData,
+  TReportAnalysis,
+  TCompareRow,
 } from "@/types";
 
 export const backtestsApi = {
@@ -27,6 +29,23 @@ export const backtestsApi = {
     unwrap<TJobAccepted>(api.post("backtests", { json: payload })),
 
   cancel: (id: number) => unwrap<null>(api.post(`backtests/${id}/cancel`)),
+
+  analysis: (id: number) =>
+    unwrap<TReportAnalysis>(api.get(`backtests/${id}/analysis`)),
+
+  /** 下载 HTML 绩效报告 */
+  downloadReportHtml: async (id: number) => {
+    const res = await api.get(`backtests/${id}/report`, {
+      searchParams: { format: "html" },
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `backtest-report-${id}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 
   metrics: (id: number) => unwrap<TBacktestMetrics>(api.get(`backtests/${id}/metrics`)),
 
@@ -60,4 +79,11 @@ export const optimizationsApi = {
     unwrap<TJobAccepted>(api.post("optimizations", { json: payload })),
 
   cancel: (id: number) => unwrap<null>(api.post(`optimizations/${id}/cancel`)),
+};
+
+export const reportsApi = {
+  compare: (backtestIds: number[]) =>
+    unwrap<{ rows: TCompareRow[] }>(
+      api.post("reports/compare", { json: { backtest_ids: backtestIds } }),
+    ),
 };

@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { Ban, Loader2 } from "lucide-react";
+import { Ban, Download, Loader2 } from "lucide-react";
 import { describeError } from "@/core/http";
 import { fmtDate, fmtMoney, fmtNum, fmtPct, toNum } from "@/core/lib";
-import { LineChart } from "@/core/charts";
+import { BarChart, LineChart } from "@/core/charts";
 import {
   Button,
   Card,
@@ -20,7 +20,7 @@ import {
   TableRow,
   toast,
 } from "@/core/ui";
-import type { TBacktestMetrics, TBacktestStrategy } from "@/types";
+import type { TBacktestMetrics, TBacktestStrategy, TReportAnalysis } from "@/types";
 import { backtestsApi } from "./backtests-api";
 import { BacktestStatusBadge } from "./status-badge";
 
@@ -226,10 +226,10 @@ type TMetricItem = {
   tone?: "pos" | "neg";
 };
 
-function buildMetricItems(m: TBacktestMetrics): TMetricItem[] {
+function buildMetricItems(m: TBacktestMetrics, bm?: TReportAnalysis["benchmark_metrics"]): TMetricItem[] {
   const totalReturn = toNum(m.total_return);
   const annual = toNum(m.annual_return);
-  return [
+  const items: TMetricItem[] = [
     {
       label: "总收益率",
       hint: "回测区间内组合净值相对初始资金的累计涨跌幅。",
@@ -289,7 +289,33 @@ function buildMetricItems(m: TBacktestMetrics): TMetricItem[] {
       value:
         m.mdd_from && m.mdd_to ? `${fmtDate(m.mdd_from)} ~ ${fmtDate(m.mdd_to)}` : "—",
     },
-  ].map((it) => ({ ...it, value: it.value === "NaN" ? "—" : it.value })) as TMetricItem[];
+  ];
+  if (bm?.alpha != null) {
+    items.push({
+      label: "Alpha（年化）",
+      hint: "相对基准的超额收益（日收益回归截距年化），衡量选股/择时能力。",
+      value: fmtPct(bm.alpha),
+      tone: bm.alpha >= 0 ? "pos" : "neg",
+    });
+  }
+  if (bm?.beta != null) {
+    items.push({
+      label: "Beta",
+      hint: "策略收益对基准收益的敏感度。1 表示与基准同步波动，<1 波动更小。",
+      value: fmtNum(bm.beta, 2),
+    });
+  }
+  if (bm?.info_ratio != null) {
+    items.push({
+      label: "信息比率",
+      hint: "超额收益均值 ÷ 跟踪误差（年化），衡量相对基准的风险调整后表现。",
+      value: fmtNum(bm.info_ratio, 2),
+    });
+  }
+  return items.map((it) => ({
+    ...it,
+    value: it.value === "NaN" ? "—" : it.value,
+  })) as TMetricItem[];
 }
 
 export function BacktestDetail({ backtestId }: TBacktestDetailProps) {
@@ -325,6 +351,18 @@ export function BacktestDetail({ backtestId }: TBacktestDetailProps) {
     enabled: done,
   });
 
+  const analysisQuery = useQuery({
+    queryKey: ["backtests", backtestId, "analysis"],
+    queryFn: () => backtestsApi.analysis(backtestId),
+    enabled: done,
+  });
+
+  const downloadReportMutation = useMutation({
+    mutationFn: () => backtestsApi.downloadReportHtml(backtestId),
+    onSuccess: () => toast.success("报告已下载"),
+    onError: (err) => toast.error(describeError(err)),
+  });
+
   const cancelMutation = useMutation({
     mutationFn: () => backtestsApi.cancel(backtestId),
     onSuccess: () => {
@@ -351,6 +389,7 @@ export function BacktestDetail({ backtestId }: TBacktestDetailProps) {
   const benchSeries = equity.map((p) => toNum(p.benchmark_nav));
   const hasBench = benchSeries.some((v) => !Number.isNaN(v));
   const trades = tradesQuery.data?.list ?? [];
+  const analysis = analysisQuery.data;
 
   return (
     <div className="space-y-6">
@@ -365,6 +404,21 @@ export function BacktestDetail({ backtestId }: TBacktestDetailProps) {
           </div>
           <div className="flex items-center gap-3">
             <BacktestStatusBadge status={bt.status} />
+            {done && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => downloadReportMutation.mutate()}
+                disabled={downloadReportMutation.isPending}
+              >
+                {downloadReportMutation.isPending ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="mr-1 h-4 w-4" />
+                )}
+                导出报告
+              </Button>
+            )}
             {(bt.status === "queued" || bt.status === "running") && (
               <Button
                 variant="outline"
@@ -403,13 +457,14 @@ export function BacktestDetail({ backtestId }: TBacktestDetailProps) {
               <CardTitle className="text-base">绩效指标</CardTitle>
             </CardHeader>
             <CardContent>
-              {metricsQuery.isLoading ? (
+              {metricsQuery.isLoading || analysisQuery.isLoading ? (
                 <div className="flex justify-center py-6">
                   <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                 </div>
               ) : metricsQuery.data ? (
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                  {buildMetricItems(metricsQuery.data).map((it) => (
+                  {buildMetricItems(metricsQuery.data, analysis?.benchmark_metrics).map(
+                    (it) => (
                     <div key={it.label} className="rounded-lg border p-3">
                       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                         <span>{it.label}</span>
@@ -459,6 +514,183 @@ export function BacktestDetail({ backtestId }: TBacktestDetailProps) {
               )}
             </CardContent>
           </Card>
+
+          {analysis && (
+            <>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    回撤曲线
+                    <InfoTip content="净值相对历史最高点的回落幅度，越接近 0 越好（通常为负值）。" />
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <LineChart
+                    categories={analysis.drawdown_series.map((p) => p.trade_date)}
+                    height={280}
+                    series={[
+                      {
+                        name: "回撤",
+                        data: analysis.drawdown_series.map((p) => toNum(p.drawdown) * 100),
+                        area: true,
+                      },
+                    ]}
+                  />
+                </CardContent>
+              </Card>
+
+              {analysis.rolling_sharpe.some((p) => p.sharpe != null) && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      滚动夏普（60 日）
+                      <InfoTip content="近 60 个交易日滚动窗口的年化夏普比率，观察策略风险调整收益随时间的变化。" />
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <LineChart
+                      categories={analysis.rolling_sharpe.map((p) => p.trade_date)}
+                      height={280}
+                      series={[
+                        {
+                          name: "滚动夏普",
+                          data: analysis.rolling_sharpe.map((p) =>
+                            p.sharpe == null ? NaN : toNum(p.sharpe),
+                          ),
+                        },
+                      ]}
+                    />
+                  </CardContent>
+                </Card>
+              )}
+
+              {analysis.monthly_returns.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      月度收益
+                      <InfoTip content="按自然月汇总的组合收益率，便于观察策略的季节性与稳定性。" />
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>年月</TableHead>
+                          <TableHead className="text-right">收益率</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {analysis.monthly_returns.map((row) => (
+                          <TableRow key={`${row.year}-${row.month}`}>
+                            <TableCell>
+                              {row.year}-{String(row.month).padStart(2, "0")}
+                            </TableCell>
+                            <TableCell
+                              className={`text-right ${
+                                row.return >= 0 ? "text-emerald-500" : "text-destructive"
+                              }`}
+                            >
+                              {fmtPct(row.return)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+              )}
+
+              {analysis.return_distribution.some((b) => b.count > 0) && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      日收益分布
+                      <InfoTip content="每日收益率的直方图分布，可观察收益偏度与尾部风险。" />
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <BarChart
+                      categories={analysis.return_distribution.map(
+                        (b) => `${(b.bin_start * 100).toFixed(1)}%`,
+                      )}
+                      data={analysis.return_distribution.map((b) => b.count)}
+                      height={280}
+                    />
+                  </CardContent>
+                </Card>
+              )}
+
+              {analysis.stock_attribution.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      个股盈亏贡献
+                      <InfoTip content="按卖出成交的已实现盈亏汇总，反映各标的对组合收益的贡献（不含浮盈）。" />
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>代码</TableHead>
+                          <TableHead className="text-right">累计盈亏</TableHead>
+                          <TableHead className="text-right">平仓次数</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {analysis.stock_attribution.map((row) => (
+                          <TableRow key={row.code}>
+                            <TableCell>{row.code}</TableCell>
+                            <TableCell
+                              className={`text-right ${
+                                row.total_pnl >= 0 ? "text-emerald-500" : "text-destructive"
+                              }`}
+                            >
+                              {fmtMoney(row.total_pnl)}
+                            </TableCell>
+                            <TableCell className="text-right">{row.trade_count}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+              )}
+
+              {(analysis.concentration.avg_max_weight != null ||
+                analysis.concentration.avg_holdings != null) && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      持仓集中度
+                      <InfoTip content="日均最大单票权重与平均持股数，反映组合分散程度。" />
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                      {analysis.concentration.avg_max_weight != null && (
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">日均最大权重</p>
+                          <p className="mt-1 text-lg font-semibold">
+                            {fmtPct(analysis.concentration.avg_max_weight)}
+                          </p>
+                        </div>
+                      )}
+                      {analysis.concentration.avg_holdings != null && (
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">日均持股数</p>
+                          <p className="mt-1 text-lg font-semibold">
+                            {fmtNum(analysis.concentration.avg_holdings, 1)}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </>
+          )}
 
           <Card>
             <CardHeader>
