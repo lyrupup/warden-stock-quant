@@ -10,6 +10,7 @@ from app.features.datasets.router import market_router, router as datasets_route
 from app.features.jobs.router import router as jobs_router
 from app.features.strategies.router import router as strategies_router
 from app.features.backtests.router import router as backtests_router
+from app.features.reports.router import router as reports_router
 from app.features.users.router import api_keys_router, me_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -30,3 +31,6 @@ api_router.include_router(strategies_router)
 
 # M4：回测引擎。
 api_router.include_router(backtests_router)
+
+# M5：绩效报告。
+api_router.include_router(reports_router)

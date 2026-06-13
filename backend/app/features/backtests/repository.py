@@ -156,6 +156,15 @@ class BacktestRepository:
         ).scalars().all()
         return rows, total
 
+    async def list_all_trades(self, backtest_id: int) -> Sequence[BacktestTrade]:
+        return (
+            await self._session.execute(
+                select(BacktestTrade)
+                .where(BacktestTrade.backtest_id == backtest_id)
+                .order_by(BacktestTrade.trade_date, BacktestTrade.id)
+            )
+        ).scalars().all()
+
     async def list_positions(
         self, backtest_id: int, trade_date: Optional[date] = None
     ) -> Sequence[BacktestDailyPosition]:

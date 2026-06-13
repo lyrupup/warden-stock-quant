@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <style>
+    :root { --fg: #1a1a1a; --muted: #666; --border: #e5e5e5; --pos: #16a34a; --neg: #dc2626; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; color: var(--fg); margin: 0; padding: 24px 32px; line-height: 1.5; }
+    h1 { font-size: 1.5rem; margin: 0 0 8px; }
+    h2 { font-size: 1.1rem; margin: 28px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+    .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+    .card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+    .card .label { font-size: 0.75rem; color: var(--muted); }
+    .card .value { font-size: 1.25rem; font-weight: 600; margin-top: 4px; }
+    .pos { color: var(--pos); }
+    .neg { color: var(--neg); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+    th { background: #f8f8f8; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .footer { margin-top: 40px; font-size: 0.75rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <h1>{{ title }}</h1>
+  <p class="meta">
+    {{ date_from }} ~ {{ date_to }} · 初始资金 {{ init_capital }} · 基准 {{ benchmark }}
+    {% if strategy_name %} · 策略 {{ strategy_name }}{% if strategy_version %} v{{ strategy_version }}{% endif %}{% endif %}
+  </p>
+
+  <h2>核心绩效指标</h2>
+  <div class="grid">
+    {% for m in metric_cards %}
+    <div class="card">
+      <div class="label">{{ m.label }}</div>
+      <div class="value {{ m.tone }}">{{ m.value }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if analysis.benchmark_metrics.alpha is not none %}
+  <h2>相对基准</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Alpha（年化）</div><div class="value">{{ fmt_pct(analysis.benchmark_metrics.alpha) }}</div></div>
+    <div class="card"><div class="label">Beta</div><div class="value">{{ fmt_num(analysis.benchmark_metrics.beta) }}</div></div>
+    <div class="card"><div class="label">信息比率</div><div class="value">{{ fmt_num(analysis.benchmark_metrics.info_ratio) }}</div></div>
+  </div>
+  {% endif %}
+
+  {% if analysis.monthly_returns %}
+  <h2>月度收益</h2>
+  <table>
+    <thead><tr><th>年月</th><th class="num">收益率</th></tr></thead>
+    <tbody>
+      {% for row in analysis.monthly_returns %}
+      <tr>
+        <td>{{ row.year }}-{{ "%02d"|format(row.month) }}</td>
+        <td class="num {{ 'pos' if row.return >= 0 else 'neg' }}">{{ fmt_pct(row.return) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if analysis.stock_attribution %}
+  <h2>个股盈亏贡献（Top）</h2>
+  <table>
+    <thead><tr><th>代码</th><th class="num">累计盈亏</th><th class="num">平仓次数</th></tr></thead>
+    <tbody>
+      {% for row in analysis.stock_attribution[:15] %}
+      <tr>
+        <td>{{ row.code }}</td>
+        <td class="num {{ 'pos' if row.total_pnl >= 0 else 'neg' }}">{{ fmt_num(row.total_pnl, 0) }}</td>
+        <td class="num">{{ row.trade_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if analysis.concentration.avg_max_weight is not none %}
+  <h2>持仓集中度</h2>
+  <div class="grid">
+    <div class="card"><div class="label">日均最大权重</div><div class="value">{{ fmt_pct(analysis.concentration.avg_max_weight) }}</div></div>
+    <div class="card"><div class="label">日均持股数</div><div class="value">{{ analysis.concentration.avg_holdings }}</div></div>
+  </div>
+  {% endif %}
+
+  <p class="footer">由 warden-stock-quant 生成 · {{ generated_at }}</p>
+</body>
+</html>
