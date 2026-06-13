@@ -156,7 +156,7 @@ run_backtest(backtest_id):
 
 ```jsonc
 {
-  "universe": { "type": "index", "code": "000300" },
+  "universe": { "type": "index", "code": "000300" },  // 默认股票池（仅预填建议，见下方说明）
   "signals": [
     { "type": "ma_cross", "fast": 5, "slow": 20 },          // 金叉买/死叉卖
     { "type": "factor_rank", "factor": "momentum_20", "top": 0.1 } // 因子选股
@@ -166,6 +166,8 @@ run_backtest(backtest_id):
   "stop": { "stop_loss": 0.08, "take_profit": 0.2 }
 }
 ```
+
+> **股票池语义（重要）**：策略配置中的 `universe` 仅作为「默认股票池」，是新建回测时表单的预填建议，**不属于策略逻辑本身**。任何一次回测/组合真正生效的股票池以其自身记录（`backtests.universe`）为准——创建回测时可覆盖策略默认值，引擎执行与「回测策略快照」展示均以该回测记录的 `universe` 为权威来源。这样同一份策略逻辑可在不同股票池上分别回测对比，无需复制策略版本。
 
 内置信号积木（`signals[].type`）：
 

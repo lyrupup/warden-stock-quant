@@ -351,6 +351,20 @@ paths:
                 allOf:
                   - $ref: "#/components/schemas/ApiResponse"
                   - properties: { data: { $ref: "#/components/schemas/Backtest" } }
+  /backtests/{id}/strategy:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Backtests]
+      summary: 回测对应的策略版本快照
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/BacktestStrategy" } }
   /backtests/{id}/cancel:
     parameters: [{ $ref: "#/components/parameters/IdPath" }]
     post:
@@ -961,7 +975,10 @@ components:
         name: { type: string }
         strategy_version_id: { type: integer }
         params: { type: object }
-        universe: { $ref: "#/components/schemas/Universe" }
+        universe:
+          allOf:
+            - $ref: "#/components/schemas/Universe"
+          description: 本次回测实际生效的股票池（权威来源）；不传则回退到策略版本的默认股票池
         date_from: { type: string, format: date }
         date_to: { type: string, format: date }
         init_capital: { type: number, example: 1000000 }
@@ -983,10 +1000,31 @@ components:
         status: { type: string, enum: [queued, running, succeeded, failed, canceled] }
         progress: { $ref: "#/components/schemas/Decimal" }
         job_id: { type: string }
+        strategy_version_id: { type: integer }
+        strategy_id: { type: integer, nullable: true, description: 关联策略 ID（策略被删除时为空） }
+        strategy_name: { type: string, nullable: true, description: 关联策略名称 }
+        strategy_version: { type: integer, nullable: true, description: 可读版本号（v1/v2…） }
         date_from: { type: string, format: date }
         date_to: { type: string, format: date }
         error: { type: string }
         created_at: { type: string, format: date-time }
+    BacktestStrategy:
+      type: object
+      description: 回测创建时绑定的策略版本不可变快照
+      properties:
+        strategy_version_id: { type: integer }
+        strategy_id: { type: integer, nullable: true }
+        strategy_name: { type: string, nullable: true }
+        version: { type: integer, nullable: true, description: 可读版本号 }
+        type: { type: string, enum: [config, code], nullable: true }
+        description: { type: string, nullable: true }
+        config: { type: object, description: 策略配置 JSON 快照 }
+        universe:
+          allOf:
+            - $ref: "#/components/schemas/Universe"
+          description: 本次回测实际使用的股票池（取自回测记录，而非策略默认值）
+        params: { type: object, description: 回测运行时参数 }
+        created_at: { type: string, format: date-time, nullable: true }
     BacktestMetrics:
       type: object
       properties:
