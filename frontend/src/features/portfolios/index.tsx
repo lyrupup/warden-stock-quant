@@ -92,7 +92,7 @@ export function PortfoliosPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               新建组合
-              <InfoTip content="Paper 模式使用虚拟资金；再平衡会按策略信号更新仿真持仓（100 股取整）。" />
+              <InfoTip content="Paper 模式使用虚拟资金；再平衡会经 M9 风控校验后由 PaperGateway 执行买卖订单（100 股取整）。" />
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
