@@ -89,6 +89,42 @@ class StrategyRepository:
             )
         ).scalar_one_or_none()
 
+    async def get_version_meta(
+        self, version_ids: Sequence[int]
+    ) -> dict[int, tuple[int, str, int]]:
+        """批量返回 version_id -> (strategy_id, strategy_name, version_number)。
+
+        用于回测列表/详情展示对应策略名与可读版本号；已删除策略的版本不会命中。
+        """
+        ids = [v for v in set(version_ids) if v is not None]
+        if not ids:
+            return {}
+        rows = (
+            await self._session.execute(
+                select(
+                    StrategyVersion.id,
+                    Strategy.id,
+                    Strategy.name,
+                    StrategyVersion.version,
+                )
+                .join(Strategy, Strategy.id == StrategyVersion.strategy_id)
+                .where(StrategyVersion.id.in_(ids))
+            )
+        ).all()
+        return {r[0]: (r[1], r[2], r[3]) for r in rows}
+
+    async def get_version_owned(
+        self, version_id: int, user_id: int
+    ) -> Optional[tuple[Strategy, StrategyVersion]]:
+        row = (
+            await self._session.execute(
+                select(Strategy, StrategyVersion)
+                .join(StrategyVersion, StrategyVersion.strategy_id == Strategy.id)
+                .where(StrategyVersion.id == version_id, Strategy.user_id == user_id)
+            )
+        ).first()
+        return row if row else None
+
     async def delete(self, strategy: Strategy) -> None:
         await self._session.delete(strategy)
         await self._session.flush()
