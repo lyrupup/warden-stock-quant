@@ -1,0 +1,1109 @@
+openapi: 3.0.3
+info:
+  title: 守望者量化交易系统 API（Warden Stock Quant）
+  description: >
+    A 股日线级别低频量化研究与交易平台。BasePath `/api/v1`。
+    鉴权：用户 JWT（Bearer access_token）或个人 API Key（Bearer wsq_<prefix>_<secret>）。
+    管理接口在 `/api/v1/admin/*`（需 admin 角色）。
+    统一响应 `{ code, message, data }`，code=0 成功；金额/比率/指标为 decimal 字符串（见 components.schemas.Decimal）。
+    异步资源（回测/因子/数据同步）采用「提交→轮询」：创建返回 job_id 与资源 id（code=60001），轮询 jobs/{id} 与结果分片接口。
+    实盘交易能力默认关闭，需管理员授权且仅自托管合规部署可用。
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: 本地开发
+
+tags:
+  - name: Auth
+    description: 认证与账户（M1）
+  - name: ApiKeys
+    description: 个人 API Key（M1）
+  - name: Datasets
+    description: 行情数据集与同步（M2）
+  - name: Market
+    description: 行情只读代理（M2，DataFeed）
+  - name: Strategies
+    description: 策略与版本（M3）
+  - name: Backtests
+    description: 回测与寻优（M4）
+  - name: Reports
+    description: 绩效报告与对比（M5）
+  - name: Factors
+    description: 因子研究（M6）
+  - name: Portfolios
+    description: 组合与持仓（M7）
+  - name: Trading
+    description: 仿真/实盘交易（M8）
+  - name: Risk
+    description: 风险控制（M9）
+  - name: Alerts
+    description: 告警渠道与记录（M10）
+  - name: Jobs
+    description: 异步任务统一查询
+  - name: Admin
+    description: 运营管理（用户/凭证/套餐/审计/监控）
+  - name: System
+    description: 健康检查与指标
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ==================== Auth / Account ====================
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: 用户注册
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                username: { type: string }
+                password: { type: string, format: password, minLength: 8 }
+      responses:
+        "200": { description: 注册成功, content: { application/json: { schema: { $ref: "#/components/schemas/TokenResponse" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: 登录（JWT）
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account, password]
+              properties:
+                account: { type: string, description: 邮箱或用户名 }
+                password: { type: string, format: password }
+      responses:
+        "200": { description: 登录成功, content: { application/json: { schema: { $ref: "#/components/schemas/TokenResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: 刷新 token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties: { refresh_token: { type: string } }
+      responses:
+        "200": { description: 刷新成功, content: { application/json: { schema: { $ref: "#/components/schemas/TokenResponse" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: 登出（吊销当前 token）
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+
+  /me:
+    get:
+      tags: [Auth]
+      summary: 当前用户信息与配额
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Me" } }
+
+  # ==================== API Keys ====================
+  /api-keys:
+    get:
+      tags: [ApiKeys]
+      summary: API Key 列表
+      responses:
+        "200": { $ref: "#/components/responses/ListOk" }
+    post:
+      tags: [ApiKeys]
+      summary: 创建 API Key（明文仅此一次返回）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes]
+              properties:
+                name: { type: string }
+                scopes: { type: array, items: { type: string, enum: [read, backtest, factor, trade] } }
+      responses:
+        "200":
+          description: 创建成功，返回明文 key（不再可查）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          id: { type: integer }
+                          key: { type: string, example: "wsq_AbC123_xxxxxxxxxxxxxxxxxxxx" }
+  /api-keys/{id}:
+    delete:
+      tags: [ApiKeys]
+      summary: 吊销 API Key
+      parameters: [{ $ref: "#/components/parameters/IdPath" }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+
+  # ==================== Datasets / Market ====================
+  /datasets/status:
+    get:
+      tags: [Datasets]
+      summary: 数据集新鲜度与缺口
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/DatasetStatus" } }
+  /datasets/sync:
+    post:
+      tags: [Datasets]
+      summary: 触发数据同步（异步）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type: { type: string, enum: [securities, daily_bars, indicators, calendar] }
+                codes: { type: array, items: { type: string } }
+                date_from: { type: string, format: date }
+      responses:
+        "200": { $ref: "#/components/responses/JobAccepted" }
+  /datasets/import:
+    post:
+      tags: [Datasets]
+      summary: 导入导出文件（CSV/Parquet，异步）
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+                path: { type: string, description: 服务端可达路径（与 file 二选一）}
+      responses:
+        "200": { $ref: "#/components/responses/JobAccepted" }
+
+  /market/securities:
+    get:
+      tags: [Market]
+      summary: 证券列表
+      parameters:
+        - { name: market, in: query, schema: { type: string, default: CN } }
+        - { name: kw, in: query, schema: { type: string }, description: 关键字搜索 }
+      responses:
+        "200": { $ref: "#/components/responses/ListOk" }
+  /market/calendar:
+    get:
+      tags: [Market]
+      summary: 交易日历
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        "200": { $ref: "#/components/responses/ListOk" }
+  /market/bars:
+    get:
+      tags: [Market]
+      summary: 日K（DataFeed 代理，PIT）
+      parameters:
+        - { name: code, in: query, required: true, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: adjust, in: query, schema: { type: string, enum: ["", qfq, hfq], default: qfq } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/Kline" } } }
+
+  # ==================== Strategies ====================
+  /strategies:
+    get:
+      tags: [Strategies]
+      summary: 策略列表
+      parameters: [{ $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/Size" }]
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+    post:
+      tags: [Strategies]
+      summary: 创建策略
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StrategyUpsert" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Strategy" } }
+  /strategies/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Strategies]
+      summary: 策略详情
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Strategy" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Strategies]
+      summary: 更新策略（生成新版本）
+      requestBody:
+        content: { application/json: { schema: { $ref: "#/components/schemas/StrategyUpsert" } } }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+    delete:
+      tags: [Strategies]
+      summary: 删除策略
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /strategies/{id}/versions:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Strategies]
+      summary: 版本列表
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+  /strategies/{id}/validate:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Strategies]
+      summary: 校验策略（配置 schema / 代码沙箱）
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /strategy-templates:
+    get:
+      tags: [Strategies]
+      summary: 策略模板库
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+
+  # ==================== Backtests ====================
+  /backtests:
+    get:
+      tags: [Backtests]
+      summary: 回测列表
+      parameters: [{ $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/Size" }]
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+    post:
+      tags: [Backtests]
+      summary: 创建回测（异步）
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/BacktestCreate" } } }
+      responses:
+        "200": { $ref: "#/components/responses/JobAccepted" }
+        "429": { $ref: "#/components/responses/QuotaExceeded" }
+  /backtests/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Backtests]
+      summary: 回测详情与进度
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Backtest" } }
+  /backtests/{id}/cancel:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Backtests]
+      summary: 取消回测
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /backtests/{id}/metrics:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Backtests]
+      summary: 绩效指标
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/BacktestMetrics" } }
+  /backtests/{id}/equity:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Backtests]
+      summary: 净值序列
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: array, items: { $ref: "#/components/schemas/EquityPoint" } } }
+  /backtests/{id}/trades:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }, { $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/Size" }]
+    get:
+      tags: [Backtests]
+      summary: 交易明细
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+  /backtests/{id}/positions:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }, { name: date, in: query, schema: { type: string, format: date } }]
+    get:
+      tags: [Backtests]
+      summary: 每日持仓
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+  /optimizations:
+    post:
+      tags: [Backtests]
+      summary: 参数寻优（批量回测，异步）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/BacktestCreate"
+                - properties:
+                    param_grid: { type: object, additionalProperties: { type: array, items: {} } }
+                    method: { type: string, enum: [grid, random], default: grid }
+      responses: { "200": { $ref: "#/components/responses/JobAccepted" } }
+
+  # ==================== Reports ====================
+  /backtests/{id}/report:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }, { name: format, in: query, schema: { type: string, enum: [html, pdf], default: html } }]
+    get:
+      tags: [Reports]
+      summary: 绩效报告
+      responses:
+        "200": { description: 报告内容（html）或下载（pdf）}
+  /reports/compare:
+    post:
+      tags: [Reports]
+      summary: 多回测对比
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { backtest_ids: { type: array, items: { type: integer } } }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /backtests/{id}/share:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Reports]
+      summary: 生成只读分享链接
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { expires_in: { type: integer, description: 秒 } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { type: object, properties: { url: { type: string } } } }
+
+  # ==================== Factors ====================
+  /factors:
+    get:
+      tags: [Factors]
+      summary: 因子列表
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+    post:
+      tags: [Factors]
+      summary: 创建因子
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/FactorUpsert" } } }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /factors/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Factors]
+      summary: 因子详情
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+    delete:
+      tags: [Factors]
+      summary: 删除因子
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /factors/{id}/compute:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Factors]
+      summary: 计算因子值（异步）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                universe: { $ref: "#/components/schemas/Universe" }
+                date_from: { type: string, format: date }
+                date_to: { type: string, format: date }
+      responses: { "200": { $ref: "#/components/responses/JobAccepted" } }
+  /factors/{id}/analyze:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Factors]
+      summary: 因子检验 IC/分层（异步）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                forward_period: { type: integer, default: 5 }
+                n_quantiles: { type: integer, default: 5 }
+                neutralize: { type: array, items: { type: string, enum: [industry, market_cap] } }
+      responses: { "200": { $ref: "#/components/responses/JobAccepted" } }
+  /factors/{id}/analyses/{aid}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }, { name: aid, in: path, required: true, schema: { type: integer } }]
+    get:
+      tags: [Factors]
+      summary: 因子分析结果
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/FactorAnalysis" } }
+  /factors/combine:
+    post:
+      tags: [Factors]
+      summary: 多因子合成
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                members: { type: array, items: { type: object, properties: { factor_id: { type: integer }, weight: { type: number } } } }
+                scheme: { type: string, enum: [equal, ic_weight, regression], default: equal }
+                neutralize: { type: array, items: { type: string } }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+
+  # ==================== Portfolios ====================
+  /portfolios:
+    get:
+      tags: [Portfolios]
+      summary: 组合列表
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+    post:
+      tags: [Portfolios]
+      summary: 创建组合
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/PortfolioUpsert" } } }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /portfolios/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Portfolios]
+      summary: 组合详情
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Portfolio" } }
+    delete:
+      tags: [Portfolios]
+      summary: 删除组合
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /portfolios/{id}/positions:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Portfolios]
+      summary: 当前持仓
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+  /portfolios/{id}/rebalance:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Portfolios]
+      summary: 触发再平衡（生成订单，过风控）
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+
+  # ==================== Trading ====================
+  /portfolios/{id}/orders:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Trading]
+      summary: 订单列表
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+    post:
+      tags: [Trading]
+      summary: 手动下单（过风控）
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/OrderCreate" } } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Order" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/RiskRejected" }
+  /orders/{id}/cancel:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Trading]
+      summary: 撤单
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /portfolios/{id}/trades:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Trading]
+      summary: 成交列表
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+  /portfolios/{id}/signals:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Trading]
+      summary: 调仓信号建议（用于人工执行/跟单）
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+
+  # ==================== Risk ====================
+  /risk/rule-sets:
+    get:
+      tags: [Risk]
+      summary: 风控规则集列表
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+    post:
+      tags: [Risk]
+      summary: 创建风控规则集
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RiskRuleSet" } } }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /risk/rule-sets/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    put:
+      tags: [Risk]
+      summary: 更新风控规则集
+      requestBody:
+        content: { application/json: { schema: { $ref: "#/components/schemas/RiskRuleSet" } } }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+    delete:
+      tags: [Risk]
+      summary: 删除风控规则集
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /risk/events:
+    get:
+      tags: [Risk]
+      summary: 风控事件
+      parameters: [{ name: portfolio_id, in: query, schema: { type: integer } }, { $ref: "#/components/parameters/Page" }]
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+
+  # ==================== Alerts ====================
+  /alerts/channels:
+    get:
+      tags: [Alerts]
+      summary: 告警渠道列表
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+    post:
+      tags: [Alerts]
+      summary: 创建告警渠道
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, config]
+              properties:
+                type: { type: string, enum: [email, webhook, dingtalk, feishu, serverchan] }
+                config: { type: object }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /alerts/channels/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    delete:
+      tags: [Alerts]
+      summary: 删除告警渠道
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: 告警记录
+      parameters: [{ $ref: "#/components/parameters/Page" }, { $ref: "#/components/parameters/Size" }]
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+
+  # ==================== Jobs ====================
+  /jobs:
+    get:
+      tags: [Jobs]
+      summary: 任务列表
+      parameters: [{ name: type, in: query, schema: { type: string } }, { $ref: "#/components/parameters/Page" }]
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+  /jobs/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    get:
+      tags: [Jobs]
+      summary: 任务状态与进度
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Job" } }
+
+  # ==================== Admin ====================
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: 用户列表
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+  /admin/users/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    put:
+      tags: [Admin]
+      summary: 更新用户（角色/套餐/配额/启停/实盘授权）
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string, enum: [user, admin] }
+                plan: { type: string }
+                status: { type: string, enum: [active, disabled] }
+                live_enabled: { type: boolean }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /admin/data-source:
+    get:
+      tags: [Admin]
+      summary: data 服务凭证列表
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+    post:
+      tags: [Admin]
+      summary: 配置 data 服务凭证（secretKey 仅写入不回显）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [base_url, secret_id, secret_key]
+              properties:
+                name: { type: string }
+                base_url: { type: string }
+                secret_id: { type: string }
+                secret_key: { type: string }
+                qps_limit: { type: integer }
+                daily_quota: { type: integer }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /admin/plans:
+    get:
+      tags: [Admin]
+      summary: 套餐列表
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+    post:
+      tags: [Admin]
+      summary: 创建/更新套餐
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { code: { type: string }, name: { type: string }, limits: { type: object } }
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
+  /admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: 审计日志检索
+      parameters: [{ name: actor_id, in: query, schema: { type: integer } }, { name: action, in: query, schema: { type: string } }, { $ref: "#/components/parameters/Page" }]
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+  /admin/system/jobs:
+    get:
+      tags: [Admin]
+      summary: 系统任务监控
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+
+  # ==================== System ====================
+  /healthz:
+    get:
+      tags: [System]
+      summary: 健康检查
+      security: []
+      responses: { "200": { description: ok } }
+  /metrics:
+    get:
+      tags: [System]
+      summary: Prometheus 指标
+      security: []
+      responses: { "200": { description: 指标文本 } }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 用户 JWT access_token 或个人 API Key（wsq_<prefix>_<secret>）
+
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, default: 1, minimum: 1 }
+    Size:
+      name: size
+      in: query
+      schema: { type: integer, default: 20, minimum: 1, maximum: 200 }
+
+  responses:
+    Ok:
+      description: 操作成功
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiResponse" } } }
+    ListOk:
+      description: 分页列表
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ApiResponse"
+              - properties: { data: { $ref: "#/components/schemas/PageData" } }
+    JobAccepted:
+      description: 任务已入队（code=60001）
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ApiResponse"
+              - properties:
+                  code: { type: integer, example: 60001 }
+                  data:
+                    type: object
+                    properties:
+                      id: { type: integer, description: 资源 id }
+                      job_id: { type: string }
+    BadRequest:
+      description: 参数错误
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiResponse" }, example: { code: 10001, message: "参数错误", data: null } } }
+    Unauthorized:
+      description: 未认证
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiResponse" }, example: { code: 40101, message: "未认证", data: null } } }
+    Forbidden:
+      description: 权限不足/越权
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiResponse" }, example: { code: 40301, message: "越权访问", data: null } } }
+    NotFound:
+      description: 资源不存在
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiResponse" }, example: { code: 10002, message: "资源不存在", data: null } } }
+    Conflict:
+      description: 冲突
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiResponse" }, example: { code: 10003, message: "资源冲突", data: null } } }
+    Unprocessable:
+      description: 校验失败（沙箱/配置）
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiResponse" }, example: { code: 61001, message: "策略校验失败", data: null } } }
+    RiskRejected:
+      description: 风控拦截
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiResponse" }, example: { code: 62001, message: "风控拦截：单票仓位超限", data: null } } }
+    QuotaExceeded:
+      description: 配额超限
+      content: { application/json: { schema: { $ref: "#/components/schemas/ApiResponse" }, example: { code: 42902, message: "超出配额", data: null } } }
+
+  schemas:
+    Decimal:
+      type: string
+      description: 高精度数值字符串，如 "10.5000"
+      example: "10.5000"
+    ApiResponse:
+      type: object
+      properties:
+        code: { type: integer, example: 0 }
+        message: { type: string, example: ok }
+        data: {}
+    PageData:
+      type: object
+      properties:
+        list: { type: array, items: {} }
+        total: { type: integer }
+        page: { type: integer }
+        size: { type: integer }
+    TokenResponse:
+      allOf:
+        - $ref: "#/components/schemas/ApiResponse"
+        - properties:
+            data:
+              type: object
+              properties:
+                access_token: { type: string }
+                refresh_token: { type: string }
+                token_type: { type: string, example: bearer }
+                expires_in: { type: integer }
+    Me:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string }
+        username: { type: string }
+        role: { type: string, enum: [user, admin] }
+        plan: { type: string }
+        live_enabled: { type: boolean }
+        quota: { type: object, description: 配额用量 }
+    DatasetStatus:
+      type: object
+      properties:
+        latest_trade_date: { type: string, format: date }
+        bars_updated_to: { type: string, format: date }
+        securities_count: { type: integer }
+        gaps: { type: array, items: { type: string } }
+        stale: { type: boolean }
+    Kline:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        open: { $ref: "#/components/schemas/Decimal" }
+        high: { $ref: "#/components/schemas/Decimal" }
+        low: { $ref: "#/components/schemas/Decimal" }
+        close: { $ref: "#/components/schemas/Decimal" }
+        volume: { $ref: "#/components/schemas/Decimal" }
+        amount: { $ref: "#/components/schemas/Decimal" }
+    Universe:
+      type: object
+      description: 股票池定义
+      properties:
+        type: { type: string, enum: [all, index, list, factor], default: all }
+        code: { type: string, description: 指数代码（type=index）}
+        codes: { type: array, items: { type: string }, description: 自定义列表（type=list）}
+        filter: { type: object, description: 因子筛选（type=factor）}
+    StrategyUpsert:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string }
+        type: { type: string, enum: [config, code], default: config }
+        description: { type: string }
+        config: { type: object, description: 配置式策略积木 }
+        code: { type: string, description: 代码式 backtrader Strategy 源码 }
+        params_schema: { type: object }
+        default_params: { type: object }
+        universe: { $ref: "#/components/schemas/Universe" }
+    Strategy:
+      allOf:
+        - $ref: "#/components/schemas/StrategyUpsert"
+        - properties:
+            id: { type: integer }
+            latest_version: { type: integer }
+            created_at: { type: string, format: date-time }
+    BacktestCreate:
+      type: object
+      required: [strategy_version_id, date_from, date_to, init_capital]
+      properties:
+        name: { type: string }
+        strategy_version_id: { type: integer }
+        params: { type: object }
+        universe: { $ref: "#/components/schemas/Universe" }
+        date_from: { type: string, format: date }
+        date_to: { type: string, format: date }
+        init_capital: { type: number, example: 1000000 }
+        benchmark: { type: string, default: "000300" }
+        adjust: { type: string, enum: ["", qfq, hfq], default: qfq }
+        cost_config:
+          type: object
+          properties:
+            commission_rate: { type: number, default: 0.0003 }
+            commission_min: { type: number, default: 5 }
+            stamp_tax_rate: { type: number, default: 0.0005 }
+            slippage_type: { type: string, enum: [none, pct, tick, volume], default: pct }
+            slippage_value: { type: number, default: 0.0005 }
+    Backtest:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled] }
+        progress: { $ref: "#/components/schemas/Decimal" }
+        job_id: { type: string }
+        date_from: { type: string, format: date }
+        date_to: { type: string, format: date }
+        error: { type: string }
+        created_at: { type: string, format: date-time }
+    BacktestMetrics:
+      type: object
+      properties:
+        total_return: { $ref: "#/components/schemas/Decimal" }
+        annual_return: { $ref: "#/components/schemas/Decimal" }
+        volatility: { $ref: "#/components/schemas/Decimal" }
+        sharpe: { $ref: "#/components/schemas/Decimal" }
+        sortino: { $ref: "#/components/schemas/Decimal" }
+        calmar: { $ref: "#/components/schemas/Decimal" }
+        max_drawdown: { $ref: "#/components/schemas/Decimal" }
+        mdd_from: { type: string, format: date }
+        mdd_to: { type: string, format: date }
+        win_rate: { $ref: "#/components/schemas/Decimal" }
+        profit_factor: { $ref: "#/components/schemas/Decimal" }
+        turnover: { $ref: "#/components/schemas/Decimal" }
+        alpha: { $ref: "#/components/schemas/Decimal" }
+        beta: { $ref: "#/components/schemas/Decimal" }
+        info_ratio: { $ref: "#/components/schemas/Decimal" }
+    EquityPoint:
+      type: object
+      properties:
+        trade_date: { type: string, format: date }
+        nav: { $ref: "#/components/schemas/Decimal" }
+        benchmark_nav: { $ref: "#/components/schemas/Decimal" }
+        drawdown: { $ref: "#/components/schemas/Decimal" }
+    FactorUpsert:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string }
+        category: { type: string }
+        type: { type: string, enum: [expr, code, builtin], default: expr }
+        expr: { type: string, example: "rank(-pct_change(close, 20))" }
+        code: { type: string }
+        params: { type: object }
+        direction: { type: integer, enum: [1, -1], default: 1 }
+    FactorAnalysis:
+      type: object
+      properties:
+        id: { type: integer }
+        status: { type: string }
+        forward_period: { type: integer }
+        n_quantiles: { type: integer }
+        ic_mean: { $ref: "#/components/schemas/Decimal" }
+        ic_ir: { $ref: "#/components/schemas/Decimal" }
+        ic_win_rate: { $ref: "#/components/schemas/Decimal" }
+        ic_series: { type: array, items: { type: object } }
+        quantile_returns: { type: object }
+        turnover: { type: object }
+    PortfolioUpsert:
+      type: object
+      required: [name, init_capital]
+      properties:
+        name: { type: string }
+        mode: { type: string, enum: [paper, live], default: paper }
+        strategy_version_id: { type: integer }
+        init_capital: { type: number }
+        benchmark: { type: string, default: "000300" }
+        rebalance: { type: string, enum: [day, week, month], default: week }
+        weight_scheme: { type: object }
+        risk_rule_set_id: { type: integer }
+    Portfolio:
+      allOf:
+        - $ref: "#/components/schemas/PortfolioUpsert"
+        - properties:
+            id: { type: integer }
+            cash: { $ref: "#/components/schemas/Decimal" }
+            market_value: { $ref: "#/components/schemas/Decimal" }
+            nav: { $ref: "#/components/schemas/Decimal" }
+            status: { type: string }
+    OrderCreate:
+      type: object
+      required: [code, side, qty]
+      properties:
+        code: { type: string }
+        side: { type: string, enum: [buy, sell] }
+        order_type: { type: string, enum: [limit, market], default: limit }
+        price: { type: number }
+        qty: { type: integer, description: 100 股整数倍 }
+    Order:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string }
+        side: { type: string }
+        price: { $ref: "#/components/schemas/Decimal" }
+        qty: { type: integer }
+        filled_qty: { type: integer }
+        status: { type: string, enum: [created, risk_rejected, submitted, partial, filled, canceled, rejected] }
+        gateway: { type: string, enum: [paper, xtp, tora, ost, emt] }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+    RiskRuleSet:
+      type: object
+      required: [name, rules]
+      properties:
+        name: { type: string }
+        scope: { type: string, enum: [portfolio, account], default: portfolio }
+        rules:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [max_position_pct, max_industry_pct, max_count, max_order_amount, max_daily_amount, blacklist, whitelist, no_st, no_new, tradable, stop_loss, take_profit, trailing_stop, max_drawdown]
+              params: { type: object }
+              action: { type: string, enum: [reject, alert, liquidate], default: reject }
+              enabled: { type: boolean, default: true }
+    Job:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [backtest, factor, data_sync, rebalance, trade, optimization] }
+        ref_id: { type: integer }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled] }
+        progress: { $ref: "#/components/schemas/Decimal" }
+        result: { type: object }
+        error: { type: string }
+        created_at: { type: string, format: date-time }
