@@ -11,6 +11,7 @@ from app.core.db.base import Base
 
 # 导入模型以注册到 Base.metadata（后续模块在此追加）。
 from app.features.datasets import models as _datasets_models  # noqa: F401
+from app.features.strategies import models as _strategies_models  # noqa: F401
 from app.features.users import models as _users_models  # noqa: F401
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy.pool import NullPool

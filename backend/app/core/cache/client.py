@@ -31,6 +31,14 @@ class CacheBackend:
     async def is_blacklisted(self, jti: str) -> bool:
         raise NotImplementedError
 
+    async def get_str(self, key: str) -> Optional[str]:
+        """读取字符串值；不存在或已过期返回 None。"""
+        raise NotImplementedError
+
+    async def set_str(self, key: str, value: str, ttl: int) -> None:
+        """写入字符串值并设置 ttl 秒过期。"""
+        raise NotImplementedError
+
 
 class InMemoryCache(CacheBackend):
     """进程内缓存降级实现（仅适用于单进程/测试）。"""
@@ -39,6 +47,8 @@ class InMemoryCache(CacheBackend):
         # key -> (value, expire_epoch)
         self._counters: Dict[str, Tuple[int, float]] = {}
         self._blacklist: Dict[str, float] = {}
+        # key -> (value, expire_epoch)
+        self._kv: Dict[str, Tuple[str, float]] = {}
 
     def _purge(self, now: float) -> None:
         expired = [k for k, (_, exp) in self._counters.items() if exp and exp < now]
@@ -47,6 +57,9 @@ class InMemoryCache(CacheBackend):
         bl_expired = [j for j, exp in self._blacklist.items() if exp and exp < now]
         for j in bl_expired:
             self._blacklist.pop(j, None)
+        kv_expired = [k for k, (_, exp) in self._kv.items() if exp and exp < now]
+        for k in kv_expired:
+            self._kv.pop(k, None)
 
     async def incr_with_ttl(self, key: str, ttl: int) -> int:
         now = time.time()
@@ -68,6 +81,7 @@ class InMemoryCache(CacheBackend):
 
     async def delete(self, key: str) -> None:
         self._counters.pop(key, None)
+        self._kv.pop(key, None)
 
     async def add_to_blacklist(self, jti: str, ttl: int) -> None:
         self._blacklist[jti] = time.time() + ttl
@@ -81,6 +95,20 @@ class InMemoryCache(CacheBackend):
             self._blacklist.pop(jti, None)
             return False
         return True
+
+    async def get_str(self, key: str) -> Optional[str]:
+        now = time.time()
+        item = self._kv.get(key)
+        if item is None:
+            return None
+        value, exp = item
+        if exp and exp < now:
+            self._kv.pop(key, None)
+            return None
+        return value
+
+    async def set_str(self, key: str, value: str, ttl: int) -> None:
+        self._kv[key] = (value, time.time() + ttl)
 
 
 class RedisCache(CacheBackend):
@@ -111,6 +139,13 @@ class RedisCache(CacheBackend):
 
     async def is_blacklisted(self, jti: str) -> bool:
         return bool(await self._redis.exists(f"{self._BLACKLIST_PREFIX}{jti}"))
+
+    async def get_str(self, key: str) -> Optional[str]:
+        value = await self._redis.get(key)
+        return value if value is not None else None
+
+    async def set_str(self, key: str, value: str, ttl: int) -> None:
+        await self._redis.set(key, value, ex=max(ttl, 1))
 
 
 _cache: Optional[CacheBackend] = None

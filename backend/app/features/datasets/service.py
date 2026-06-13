@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import get_cache
 from app.core.config import get_settings
 from app.core.data.client import WardenDataClient
 from app.core.data.feed.pg_feed import PgDataFeed
@@ -23,15 +25,40 @@ from app.features.datasets.repository import (
 from app.features.datasets.schema import DataSourceCreate, DataSourceView, SyncRequest
 
 
+DATASET_STATUS_CACHE_KEY = "datasets:status"
+# 数据集新鲜度非实时需求，仅在盘后同步后变化；缓存 2 小时，同步成功会主动失效。
+DATASET_STATUS_CACHE_TTL = 2 * 60 * 60  # 7200 秒
+
+
 class DatasetService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._feed = PgDataFeed(session)
         self._sync_repo = DataSyncRepository(session)
         self._job_repo = SystemJobRepository(session)
+        self._cache = get_cache()
 
     async def get_status(self) -> dict:
-        return await self._feed.dataset_status()
+        """数据集状态摘要（带缓存）。
+
+        ``dataset_status`` 对千万级日 K 做 ``max(trade_date)``，开销较大，
+        而新鲜度只在同步后变化，故缓存 2 小时；同步成功会主动失效缓存。
+        """
+        cached = await self._cache.get_str(DATASET_STATUS_CACHE_KEY)
+        if cached is not None:
+            return json.loads(cached)
+        status = await self._feed.dataset_status()
+        await self._cache.set_str(
+            DATASET_STATUS_CACHE_KEY,
+            json.dumps(status),
+            DATASET_STATUS_CACHE_TTL,
+        )
+        return status
+
+    @staticmethod
+    async def invalidate_status_cache() -> None:
+        """清除数据集状态缓存（数据变更后调用）。"""
+        await get_cache().delete(DATASET_STATUS_CACHE_KEY)
 
     async def trigger_sync(self, user_id: int, payload: SyncRequest) -> tuple[int, str]:
         job = DataSyncJob(
@@ -270,4 +297,6 @@ async def execute_sync_job(session: AsyncSession, sync_job_id: int) -> dict:
             progress=Decimal("100"),
             result=result,
         )
+    # 数据已更新，失效状态缓存使下次查询拿到最新新鲜度。
+    await DatasetService.invalidate_status_cache()
     return result
