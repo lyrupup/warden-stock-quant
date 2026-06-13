@@ -1,0 +1,18 @@
+import i18n from "i18next";
+import { initReactI18next } from "react-i18next";
+import { zhCN } from "./locales/zh-CN";
+
+export const defaultNS = "translation";
+
+void i18n.use(initReactI18next).init({
+  resources: {
+    "zh-CN": { translation: zhCN },
+  },
+  lng: "zh-CN",
+  fallbackLng: "zh-CN",
+  defaultNS,
+  interpolation: { escapeValue: false },
+  returnNull: false,
+});
+
+export { i18n };
