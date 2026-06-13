@@ -18,6 +18,8 @@ from app.features.portfolios.models import Portfolio
 from app.features.portfolios.repository import PortfolioRepository
 from app.features.portfolios.schema import PortfolioUpsert, PortfolioView, PositionView, RebalanceResultView
 from app.features.strategies.repository import StrategyRepository
+from app.features.trading.schema import OrderCreate
+from app.features.trading.service import TradingService
 
 
 class PortfolioService:
@@ -88,8 +90,10 @@ class PortfolioService:
             PositionView.model_validate(r, from_attributes=True).model_dump() for r in rows
         ]
 
-    async def rebalance(self, user_id: int, portfolio_id: int) -> dict:
-        """根据关联策略生成目标权重并更新仿真持仓（Paper 口径）。"""
+    async def _compute_rebalance_targets(
+        self, user_id: int, portfolio_id: int
+    ) -> dict[str, Any]:
+        """计算再平衡目标仓位（不下单）。"""
         p = await self._require_owned(portfolio_id, user_id)
         if not p.strategy_version_id:
             raise ValidationFailedError("组合未关联策略版本，无法再平衡")
@@ -108,11 +112,6 @@ class PortfolioService:
         if not latest_str:
             raise ValidationFailedError("交易日历为空，请先同步数据集")
         trade_date = date.fromisoformat(latest_str)
-        calendar = await feed.trading_calendar(
-            trade_date.replace(year=trade_date.year - 1), trade_date
-        )
-        if not calendar:
-            raise ValidationFailedError("交易日历为空")
 
         universe = version.universe or {"type": "all"}
         codes = await resolve_universe_codes(self._session, universe, max_codes=50)
@@ -153,13 +152,9 @@ class PortfolioService:
             raise ValidationFailedError("未选出任何标的")
 
         weight = 1.0 / len(selected)
-        total_capital = float(p.cash) + sum(
-            float(pos.market_value or 0)
-            for pos in await self._repo.list_positions(portfolio_id)
-        )
+        positions = await self._repo.list_positions(portfolio_id)
+        total_capital = float(p.cash) + sum(float(pos.market_value or 0) for pos in positions)
         targets: list[dict[str, Any]] = []
-        orders: list[dict[str, Any]] = []
-        remaining_cash = Decimal(str(total_capital))
 
         for code in selected:
             bars = bars_by_code.get(code)
@@ -171,38 +166,62 @@ class PortfolioService:
             qty = int(target_value / price / 100) * 100
             if qty <= 0:
                 continue
-            amount = Decimal(str(round(qty * price, 4)))
-            targets.append({"code": code, "weight": weight, "target_qty": qty, "price": price})
-            orders.append(
-                {
-                    "code": code,
-                    "side": "buy",
-                    "qty": qty,
-                    "price": price,
-                    "amount": float(amount),
-                    "status": "simulated",
-                }
+            targets.append(
+                {"code": code, "weight": weight, "target_qty": qty, "price": price}
             )
-            await self._repo.upsert_position(
-                portfolio_id,
-                code,
-                qty=qty,
-                avail_qty=0,
-                cost=amount,
-                last_price=Decimal(str(round(price, 4))),
-                market_value=amount,
-                pnl=Decimal("0"),
-            )
-            remaining_cash -= amount
 
-        p.cash = max(remaining_cash, Decimal("0"))
-        await self._session.flush()
+        return {"trade_date": trade_date.isoformat(), "targets": targets}
+
+    async def rebalance(self, user_id: int, portfolio_id: int) -> dict:
+        """触发再平衡：经风控 + PaperGateway 执行买卖订单。"""
+        preview = await self._compute_rebalance_targets(user_id, portfolio_id)
+        trading = TradingService(self._session)
+        positions = {p.code: p for p in await self._repo.list_positions(portfolio_id)}
+        target_codes = {t["code"] for t in preview["targets"]}
+        executed: list[dict] = []
+
+        # 先卖后买
+        for code, pos in list(positions.items()):
+            if code not in target_codes and pos.avail_qty > 0:
+                order = await trading.submit_order(
+                    user_id,
+                    portfolio_id,
+                    OrderCreate(code=code, side="sell", qty=pos.avail_qty, order_type="limit", price=float(pos.last_price or 0)),
+                )
+                executed.append(order)
+
+        for t in preview["targets"]:
+            code = t["code"]
+            target_qty = int(t["target_qty"])
+            cur = positions.get(code)
+            cur_qty = cur.qty if cur else 0
+            diff = target_qty - cur_qty
+            price = float(t["price"])
+            if diff < 0 and cur and cur.avail_qty > 0:
+                sell_qty = min(-diff, cur.avail_qty)
+                sell_qty = int(sell_qty / 100) * 100
+                if sell_qty > 0:
+                    order = await trading.submit_order(
+                        user_id,
+                        portfolio_id,
+                        OrderCreate(code=code, side="sell", qty=sell_qty, order_type="limit", price=price),
+                    )
+                    executed.append(order)
+            elif diff > 0:
+                buy_qty = int(diff / 100) * 100
+                if buy_qty > 0:
+                    order = await trading.submit_order(
+                        user_id,
+                        portfolio_id,
+                        OrderCreate(code=code, side="buy", qty=buy_qty, order_type="limit", price=price),
+                    )
+                    executed.append(order)
 
         result = RebalanceResultView(
-            trade_date=trade_date.isoformat(),
-            targets=targets,
-            orders=orders,
-            message=f"已按等权再平衡至 {len(targets)} 只标的（仿真持仓已更新）",
+            trade_date=preview["trade_date"],
+            targets=preview["targets"],
+            orders=executed,
+            message=f"再平衡完成，共执行 {len(executed)} 笔订单（经风控 + Paper 撮合）",
         )
         return result.model_dump()
 

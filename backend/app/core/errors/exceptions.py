@@ -65,3 +65,8 @@ class RateLimitedError(BusinessError):
 class QuotaExceededError(BusinessError):
     def __init__(self, message: Optional[str] = None) -> None:
         super().__init__(ErrorCode.QUOTA_EXCEEDED, message)
+
+
+class RiskRejectedError(BusinessError):
+    def __init__(self, message: Optional[str] = None, data: object = None) -> None:
+        super().__init__(ErrorCode.RISK_REJECTED, message, data=data)
