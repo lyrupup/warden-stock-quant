@@ -14,6 +14,8 @@ from app.features.reports.router import router as reports_router
 from app.features.factors.router import router as factors_router
 from app.features.portfolios.router import router as portfolios_router
 from app.features.alerts.router import router as alerts_router
+from app.features.trading.router import router as trading_router
+from app.features.risk.router import router as risk_router
 from app.features.users.router import api_keys_router, me_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -46,3 +48,9 @@ api_router.include_router(portfolios_router)
 
 # M10：告警。
 api_router.include_router(alerts_router)
+
+# M8：仿真交易。
+api_router.include_router(trading_router)
+
+# M9：风控。
+api_router.include_router(risk_router)

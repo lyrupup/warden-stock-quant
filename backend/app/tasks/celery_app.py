@@ -57,3 +57,5 @@ from app.features.factors import models as _factors_models  # noqa: E402,F401
 from app.features.portfolios import models as _portfolios_models  # noqa: E402,F401
 from app.features.alerts import models as _alerts_models  # noqa: E402,F401
 from app.features.reports import models as _reports_models  # noqa: E402,F401
+from app.features.trading import models as _trading_models  # noqa: E402,F401
+from app.features.risk import models as _risk_models  # noqa: E402,F401

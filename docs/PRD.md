@@ -573,11 +573,11 @@ Admin: DataSourceCredential（warden-stock-data secretId/secretKey，加密）
 | **M4** | 回测引擎 | ✅ | `backtests` + `engine/backtest` | 回测三视图 + 参数寻优 | 多信号 + ma_trend 金字塔 + 网格/随机寻优；`factor_rank` 待 M6 |
 | **M5** | 绩效分析与报告 | 🟡 | `reports` + `engine/report` | 详情图表 + 对比页 + HTML/PDF 导出 + 分享 | 缺：行业归因（待上游） |
 | **M6** | 量化因子研究 | 🟡 | `factors` + `engine/factor` | 因子库/计算/IC 分析页 | 缺：Parquet 加速、中性化（待上游） |
-| **M7** | 仓位与组合管理 | 🟡 | `portfolios` | 组合列表/持仓/再平衡 | 缺：M8 订单执行联动 |
-| **M8** | 仿真/实盘交易 | ⬜ | — | 占位页 | PaperGateway/订单状态机/调度尚未实现 |
-| **M9** | 风险控制 | ⬜ | — | 占位页 | 事前/事中/事后风控引擎尚未实现 |
+| **M7** | 仓位与组合管理 | 🟡 | `portfolios` | 组合列表/持仓/再平衡 | 再平衡已接入 M8 风控+Paper 执行；缺：定时调度 |
+| **M8** | 仿真/实盘交易 | 🟡 | `trading` + `engine/execution` | 交易中心（订单/成交/信号） | PaperGateway 即时撮合 + 订单状态机；缺：vnpy 调度、实盘券商网关 |
+| **M9** | 风险控制 | 🟡 | `risk` + `engine/risk` | 规则集 CRUD + 风控事件 | 事前规则引擎（黑名单/限额/仓位/ST/停牌）；缺：事中/事后规则 |
 | **M10** | 日志、告警与监控 | 🟡 | 结构化日志/审计 + `alerts` + 任务列表 | 告警渠道/记录页 | 缺：钉钉/飞书深度集成、任务监控仪表盘 |
-| **M11** | Web 控制台 | 🟡 | — | M1–M7/M10 页面完成 | M8/M9 对应页面随模块迭代补齐 |
+| **M11** | Web 控制台 | 🟡 | — | M1–M10 主流程页面 | M8/M9 页面已补齐；随模块迭代完善 |
 
 ### 11.2 已实现功能明细（M1–M5）
 

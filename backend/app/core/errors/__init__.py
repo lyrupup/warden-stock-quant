@@ -8,6 +8,7 @@ from app.core.errors.exceptions import (
     NotFoundError,
     QuotaExceededError,
     RateLimitedError,
+    RiskRejectedError,
     UnauthorizedError,
     ValidationFailedError,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "NotFoundError",
     "QuotaExceededError",
     "RateLimitedError",
+    "RiskRejectedError",
     "UnauthorizedError",
     "ValidationFailedError",
     "register_exception_handlers",
