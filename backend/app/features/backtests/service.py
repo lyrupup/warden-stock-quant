@@ -12,14 +12,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import NotFoundError, QuotaExceededError, ValidationFailedError
 from app.core.engine.backtest.compiler import ConfigStrategyCompiler
-from app.features.backtests.models import Backtest
-from app.features.backtests.repository import BacktestRepository
+from app.features.backtests.models import Backtest, BacktestOptimization
+from app.features.backtests.repository import BacktestRepository, OptimizationRepository
 from app.features.backtests.schema import (
     BacktestCreate,
     BacktestMetricsView,
     BacktestStrategyView,
     BacktestView,
     EquityPointView,
+    OptimizationCreate,
+    OptimizationResultView,
+    OptimizationView,
     PositionView,
     TradeView,
 )
@@ -30,6 +33,7 @@ from app.features.strategies.repository import StrategyRepository
 MAX_CONCURRENT_BACKTESTS = 3
 MAX_RANGE_DAYS = 3650
 MAX_UNIVERSE_CODES = 50
+MAX_OPTIM_COMBOS = 200
 
 _CELERY_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "").lower() in ("1", "true", "yes")
 
@@ -358,4 +362,271 @@ async def execute_backtest(session: AsyncSession, backtest_id: int) -> dict:
         )
         if bt.job_id:
             await job_repo.update(bt.job_id, status="failed", error=str(exc))
+        raise
+
+
+MAX_CONCURRENT_OPTIM = 1
+
+
+class OptimizationService:
+    """参数寻优业务编排。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._repo = OptimizationRepository(session)
+        self._strategy_repo = StrategyRepository(session)
+        self._job_repo = SystemJobRepository(session)
+
+    def _to_view(
+        self, opt: BacktestOptimization, meta: Optional[tuple[int, str, int]] = None
+    ) -> OptimizationView:
+        strategy_id, strategy_name, strategy_version = meta or (None, None, None)
+        return OptimizationView(
+            id=opt.id,
+            name=opt.name,
+            status=opt.status,
+            progress=opt.progress,
+            job_id=opt.job_id,
+            strategy_version_id=opt.strategy_version_id,
+            strategy_name=strategy_name,
+            strategy_version=strategy_version,
+            method=opt.method,
+            objective=opt.objective,
+            oos_split=opt.oos_split,
+            total_combos=opt.total_combos,
+            param_space=opt.param_space,
+            date_from=opt.date_from,
+            date_to=opt.date_to,
+            init_capital=opt.init_capital,
+            benchmark=opt.benchmark,
+            adjust=opt.adjust,
+            summary=opt.summary,
+            error=opt.error,
+            created_at=opt.created_at,
+            finished_at=opt.finished_at,
+        )
+
+    async def create_optimization(
+        self, user_id: int, payload: OptimizationCreate
+    ) -> tuple[int, str]:
+        from app.core.engine.backtest.optimizer import generate_combos
+
+        if payload.date_from > payload.date_to:
+            raise ValidationFailedError("date_from 不能晚于 date_to")
+        active = await self._repo.count_active(user_id)
+        if active >= MAX_CONCURRENT_OPTIM:
+            raise QuotaExceededError("已有寻优任务在运行，请等待完成")
+
+        owned = await self._strategy_repo.get_version_owned(
+            payload.strategy_version_id, user_id
+        )
+        if owned is None:
+            raise NotFoundError("策略版本不存在")
+        strategy, version = owned
+        if strategy.type != "config" or not version.config:
+            raise ValidationFailedError("仅支持配置式策略寻优")
+        compiler = ConfigStrategyCompiler(version.config, {})
+        if not compiler.supported():
+            raise ValidationFailedError(f"暂不支持的信号类型: {compiler.signal_type}")
+
+        combos = generate_combos(payload.param_space, payload.method, payload.n_iter)
+        if not combos:
+            raise ValidationFailedError("参数空间为空")
+        if len(combos) > MAX_OPTIM_COMBOS:
+            raise ValidationFailedError(
+                f"参数组合数 {len(combos)} 超过上限 {MAX_OPTIM_COMBOS}，请缩小空间或改用随机搜索"
+            )
+
+        universe = (
+            payload.universe.model_dump()
+            if payload.universe
+            else (version.universe or {"type": "list", "codes": []})
+        )
+        opt = BacktestOptimization(
+            user_id=user_id,
+            strategy_version_id=version.id,
+            name=payload.name or f"{strategy.name} 寻优",
+            param_space=payload.param_space,
+            method=payload.method,
+            objective=payload.objective,
+            oos_split=Decimal(str(payload.oos_split)),
+            universe=universe,
+            date_from=payload.date_from,
+            date_to=payload.date_to,
+            init_capital=payload.init_capital,
+            benchmark=payload.benchmark,
+            cost_config=payload.cost_config,
+            adjust=payload.adjust,
+            total_combos=len(combos),
+            status="queued",
+            progress=Decimal("0"),
+        )
+        await self._repo.add(opt)
+        await self._session.flush()
+
+        if _CELERY_EAGER:
+            celery_id = f"eager-opt-{opt.id}"
+            await self._repo.update_status(opt.id, job_id=celery_id)
+            await execute_optimization(self._session, opt.id)
+        else:
+            await self._session.commit()
+            from app.tasks.backtest_tasks import run_optimization_task
+
+            async_result = run_optimization_task.delay(opt.id)
+            celery_id = async_result.id
+            await self._repo.update_status(opt.id, job_id=celery_id)
+
+        sys_job = SystemJob(
+            id=celery_id,
+            user_id=user_id,
+            type="optimization",
+            ref_id=opt.id,
+            status="queued",
+            payload={"optimization_id": opt.id},
+        )
+        await self._job_repo.create(sys_job)
+        return opt.id, celery_id
+
+    async def list_optimizations(
+        self, user_id: int, page: int, size: int
+    ) -> tuple[list[OptimizationView], int]:
+        rows, total = await self._repo.list_by_user(user_id, page, size)
+        metas = await self._strategy_repo.get_version_meta(
+            [r.strategy_version_id for r in rows]
+        )
+        return [self._to_view(r, metas.get(r.strategy_version_id)) for r in rows], total
+
+    async def get_optimization(
+        self, user_id: int, optimization_id: int
+    ) -> OptimizationView:
+        opt = await self._require_owned(optimization_id, user_id)
+        metas = await self._strategy_repo.get_version_meta([opt.strategy_version_id])
+        return self._to_view(opt, metas.get(opt.strategy_version_id))
+
+    async def list_results(
+        self, user_id: int, optimization_id: int
+    ) -> list[OptimizationResultView]:
+        await self._require_owned(optimization_id, user_id)
+        rows = await self._repo.list_results(optimization_id)
+        return [
+            OptimizationResultView.model_validate(r, from_attributes=True) for r in rows
+        ]
+
+    async def cancel_optimization(self, user_id: int, optimization_id: int) -> None:
+        opt = await self._require_owned(optimization_id, user_id)
+        if opt.status in ("succeeded", "failed", "canceled"):
+            return
+        await self._repo.update_status(optimization_id, status="canceled")
+
+    async def _require_owned(
+        self, optimization_id: int, user_id: int
+    ) -> BacktestOptimization:
+        opt = await self._repo.get_owned(optimization_id, user_id)
+        if opt is None:
+            raise NotFoundError("寻优任务不存在")
+        return opt
+
+
+def _jsonify_metrics(metrics: Optional[dict]) -> Optional[dict]:
+    """将指标里的非 JSON 安全类型（date/Decimal）转为可存 JSON 的形式。"""
+    if not metrics:
+        return metrics
+    out: dict[str, Any] = {}
+    for k, v in metrics.items():
+        if isinstance(v, Decimal):
+            out[k] = float(v)
+        elif hasattr(v, "isoformat"):
+            out[k] = v.isoformat()
+        else:
+            out[k] = v
+    return out
+
+
+async def execute_optimization(session: AsyncSession, optimization_id: int) -> dict:
+    """Worker 内执行参数寻优并落库。"""
+    from app.core.engine.backtest.data_loader import build_engine_input
+    from app.core.engine.backtest.optimizer import generate_combos, run_optimization
+
+    repo = OptimizationRepository(session)
+    strategy_repo = StrategyRepository(session)
+    job_repo = SystemJobRepository(session)
+
+    opt = (
+        await session.execute(
+            select(BacktestOptimization).where(
+                BacktestOptimization.id == optimization_id
+            )
+        )
+    ).scalar_one_or_none()
+    if opt is None:
+        raise NotFoundError("寻优任务不存在")
+    if opt.status == "canceled":
+        return {"status": "canceled"}
+
+    version_pair = await strategy_repo.get_version_owned(
+        opt.strategy_version_id, opt.user_id
+    )
+    if version_pair is None:
+        raise NotFoundError("策略版本不存在")
+    _strategy, version = version_pair
+
+    await repo.update_status(optimization_id, status="running", progress=Decimal("1"))
+    if opt.job_id:
+        await job_repo.update(opt.job_id, status="running", progress=Decimal("1"))
+
+    try:
+        base = await build_engine_input(
+            session,
+            date_from=opt.date_from,
+            date_to=opt.date_to,
+            init_capital=float(opt.init_capital),
+            adjust=opt.adjust,
+            cost_config=opt.cost_config,
+            strategy_config=version.config or {},
+            universe=opt.universe,
+            params={},
+            benchmark=opt.benchmark,
+            max_codes=MAX_UNIVERSE_CODES,
+        )
+        combos = generate_combos(opt.param_space, opt.method, opt.total_combos)
+        outcome = run_optimization(
+            base,
+            combos,
+            objective=opt.objective,
+            oos_split=float(opt.oos_split),
+        )
+
+        rows = [
+            {
+                "params": r["params"],
+                "objective_value": (
+                    Decimal(str(r["objective_value"]))
+                    if r["objective_value"] is not None
+                    else None
+                ),
+                "is_metrics": _jsonify_metrics(r["is_metrics"]),
+                "oos_metrics": _jsonify_metrics(r["oos_metrics"]),
+                "rank": r["rank"],
+            }
+            for r in outcome["results"]
+        ]
+        await repo.save_results(optimization_id, rows)
+        finished = datetime.now(timezone.utc)
+        await repo.update_status(
+            optimization_id,
+            status="succeeded",
+            progress=Decimal("100"),
+            summary=outcome["summary"],
+            finished_at=finished,
+        )
+        if opt.job_id:
+            await job_repo.update(opt.job_id, status="succeeded", progress=Decimal("100"))
+        return {"status": "succeeded", "optimization_id": optimization_id}
+    except Exception as exc:
+        finished = datetime.now(timezone.utc)
+        await repo.update_status(
+            optimization_id, status="failed", error=str(exc), finished_at=finished
+        )
+        if opt.job_id:
+            await job_repo.update(opt.job_id, status="failed", error=str(exc))
         raise

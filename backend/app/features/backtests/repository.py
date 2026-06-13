@@ -15,6 +15,8 @@ from app.features.backtests.models import (
     BacktestDailyPosition,
     BacktestEquity,
     BacktestMetric,
+    BacktestOptimization,
+    BacktestOptimizationResult,
     BacktestTrade,
 )
 
@@ -166,3 +168,117 @@ class BacktestRepository:
             BacktestDailyPosition.trade_date, BacktestDailyPosition.code
         )
         return (await self._session.execute(stmt)).scalars().all()
+
+
+class OptimizationRepository:
+    """参数寻优数据访问（强制租户作用域）。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, opt: BacktestOptimization) -> BacktestOptimization:
+        self._session.add(opt)
+        await self._session.flush()
+        return opt
+
+    async def get_owned(
+        self, optimization_id: int, user_id: int
+    ) -> Optional[BacktestOptimization]:
+        return (
+            await self._session.execute(
+                select(BacktestOptimization).where(
+                    BacktestOptimization.id == optimization_id,
+                    BacktestOptimization.user_id == user_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def list_by_user(
+        self, user_id: int, page: int, size: int
+    ) -> tuple[Sequence[BacktestOptimization], int]:
+        total = int(
+            (
+                await self._session.execute(
+                    select(func.count())
+                    .select_from(BacktestOptimization)
+                    .where(BacktestOptimization.user_id == user_id)
+                )
+            ).scalar_one()
+        )
+        offset = max(page - 1, 0) * size
+        rows = (
+            await self._session.execute(
+                select(BacktestOptimization)
+                .where(BacktestOptimization.user_id == user_id)
+                .order_by(BacktestOptimization.created_at.desc())
+                .offset(offset)
+                .limit(size)
+            )
+        ).scalars().all()
+        return rows, total
+
+    async def count_active(self, user_id: int) -> int:
+        return int(
+            (
+                await self._session.execute(
+                    select(func.count())
+                    .select_from(BacktestOptimization)
+                    .where(
+                        BacktestOptimization.user_id == user_id,
+                        BacktestOptimization.status.in_(("queued", "running")),
+                    )
+                )
+            ).scalar_one()
+        )
+
+    async def update_status(
+        self,
+        optimization_id: int,
+        *,
+        status: Optional[str] = None,
+        progress: Optional[Decimal] = None,
+        error: Optional[str] = None,
+        job_id: Optional[str] = None,
+        summary: Optional[dict[str, Any]] = None,
+        finished_at: Any = None,
+    ) -> None:
+        opt = (
+            await self._session.execute(
+                select(BacktestOptimization).where(
+                    BacktestOptimization.id == optimization_id
+                )
+            )
+        ).scalar_one()
+        if status is not None:
+            opt.status = status
+        if progress is not None:
+            opt.progress = progress
+        if error is not None:
+            opt.error = error
+        if job_id is not None:
+            opt.job_id = job_id
+        if summary is not None:
+            opt.summary = summary
+        if finished_at is not None:
+            opt.finished_at = finished_at
+        await self._session.flush()
+
+    async def save_results(
+        self, optimization_id: int, results: list[dict[str, Any]]
+    ) -> None:
+        for r in results:
+            self._session.add(
+                BacktestOptimizationResult(optimization_id=optimization_id, **r)
+            )
+        await self._session.flush()
+
+    async def list_results(
+        self, optimization_id: int
+    ) -> Sequence[BacktestOptimizationResult]:
+        return (
+            await self._session.execute(
+                select(BacktestOptimizationResult)
+                .where(BacktestOptimizationResult.optimization_id == optimization_id)
+                .order_by(BacktestOptimizationResult.rank)
+            )
+        ).scalars().all()

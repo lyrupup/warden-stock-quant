@@ -126,6 +126,50 @@ async def test_create_backtest_and_get_results(client):
 
 
 @pytest.mark.asyncio
+async def test_create_optimization_and_results(client):
+    await _seed_market(client)
+    tokens = await register_user(client, email="opt@example.com", username="optuser")
+    headers = auth_header(tokens["access_token"])
+    version_id = await _create_strategy_version(client, headers)
+
+    start = date(2024, 1, 2)
+    end = start + timedelta(days=60)
+    create = await client.post(
+        "/api/v1/optimizations",
+        json={
+            "strategy_version_id": version_id,
+            "param_space": {"fast": [3, 5], "slow": [15, 20]},
+            "method": "grid",
+            "objective": "sharpe",
+            "oos_split": 0.3,
+            "date_from": start.isoformat(),
+            "date_to": end.isoformat(),
+            "init_capital": 1000000,
+            "universe": {"type": "list", "codes": ["600000"]},
+        },
+        headers=headers,
+    )
+    assert create.status_code == 200, create.text
+    opt_id = create.json()["data"]["id"]
+
+    detail = await client.get(f"/api/v1/optimizations/{opt_id}", headers=headers)
+    assert detail.status_code == 200
+    data = detail.json()["data"]
+    assert data["status"] == "succeeded"
+    assert data["total_combos"] == 4
+    assert data["summary"] is not None
+
+    results = await client.get(
+        f"/api/v1/optimizations/{opt_id}/results", headers=headers
+    )
+    assert results.status_code == 200
+    rows = results.json()["data"]
+    assert len(rows) == 4
+    assert rows[0]["rank"] == 1
+    assert rows[0]["params"]
+
+
+@pytest.mark.asyncio
 async def test_backtest_tenant_isolation(client):
     await _seed_market(client)
     tokens_a = await register_user(client, email="a@bt.com", username="auser")

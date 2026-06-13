@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_session
 from app.core.response import job_accepted, paginated, success
 from app.core.security.deps import Principal, require_user_session
-from app.features.backtests.schema import BacktestCreate
-from app.features.backtests.service import BacktestService
+from app.features.backtests.schema import BacktestCreate, OptimizationCreate
+from app.features.backtests.service import BacktestService, OptimizationService
 
 router = APIRouter(tags=["Backtests"])
 
@@ -116,3 +116,59 @@ async def list_backtest_positions(
 ) -> dict:
     items = await BacktestService(session).list_positions(principal.user_id, id, date)
     return success([i.model_dump() for i in items])
+
+
+@router.get("/optimizations", summary="参数寻优列表")
+async def list_optimizations(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_user_session),
+) -> dict:
+    items, total = await OptimizationService(session).list_optimizations(
+        principal.user_id, page, size
+    )
+    return paginated([i.model_dump() for i in items], total, page, size)
+
+
+@router.post("/optimizations", summary="创建参数寻优（异步批量回测）")
+async def create_optimization(
+    payload: OptimizationCreate,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_user_session),
+) -> dict:
+    opt_id, job_id = await OptimizationService(session).create_optimization(
+        principal.user_id, payload
+    )
+    return job_accepted(opt_id, job_id)
+
+
+@router.get("/optimizations/{id}", summary="寻优任务详情与进度")
+async def get_optimization(
+    id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_user_session),
+) -> dict:
+    data = await OptimizationService(session).get_optimization(principal.user_id, id)
+    return success(data.model_dump())
+
+
+@router.get("/optimizations/{id}/results", summary="寻优结果汇总（按目标指标排序）")
+async def list_optimization_results(
+    id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_user_session),
+) -> dict:
+    items = await OptimizationService(session).list_results(principal.user_id, id)
+    return success([i.model_dump() for i in items])
+
+
+@router.post("/optimizations/{id}/cancel", summary="取消寻优")
+async def cancel_optimization(
+    id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_user_session),
+) -> dict:
+    await OptimizationService(session).cancel_optimization(principal.user_id, id)
+    await session.commit()
+    return success(message="已取消")
