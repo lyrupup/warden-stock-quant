@@ -112,3 +112,69 @@ export type TDataSource = {
   daily_quota?: number;
   enabled: boolean;
 };
+
+/** 股票池定义 */
+export type TUniverse = {
+  type: "all" | "index" | "list" | "factor";
+  code?: string;
+  codes?: string[];
+  filter?: Record<string, unknown>;
+};
+
+/** 配置式策略 JSON */
+export type TStrategyConfig = {
+  signals: Array<Record<string, unknown>>;
+  rebalance?: { freq?: "day" | "week" | "month" };
+  position?: {
+    scheme?: string;
+    max_n?: number;
+    scale_in?: Record<string, unknown>;
+  };
+  stop?: { stop_loss?: number; take_profit?: number; trailing?: number; observe_stop_loss?: number };
+};
+
+/** 策略 */
+export type TStrategy = {
+  id: number;
+  name: string;
+  type: "config" | "code";
+  description?: string;
+  latest_version: number;
+  config?: TStrategyConfig;
+  code?: string;
+  params_schema?: Record<string, unknown>;
+  default_params?: Record<string, unknown>;
+  universe?: TUniverse;
+  created_at?: string;
+  updated_at?: string;
+};
+
+/** 策略版本 */
+export type TStrategyVersion = {
+  id: number;
+  strategy_id: number;
+  version: number;
+  config?: TStrategyConfig;
+  params_schema?: Record<string, unknown>;
+  default_params?: Record<string, unknown>;
+  universe?: TUniverse;
+  created_at?: string;
+};
+
+/** 策略模板 */
+export type TStrategyTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  type: "config" | "code";
+  config: TStrategyConfig;
+  params_schema: Record<string, unknown>;
+  default_params: Record<string, unknown>;
+  universe: TUniverse;
+};
+
+/** 策略校验结果 */
+export type TStrategyValidateResult = {
+  valid: boolean;
+  errors: string[];
+};

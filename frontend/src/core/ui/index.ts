@@ -50,5 +50,6 @@ export {
 } from "./form";
 export { DataTable, type IDataTableProps } from "./data-table";
 export { PageHeader } from "./page-header";
+export { InfoTip } from "./info-tip";
 export { PlaceholderPage } from "./placeholder";
 export { Toaster, toast } from "./toast";
