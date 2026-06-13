@@ -59,6 +59,35 @@ async def test_backtest_analysis_and_html_report(client):
 
 
 @pytest.mark.asyncio
+async def test_pdf_report_and_share_link(client):
+    await _seed_market(client)
+    tokens = await register_user(client, email="pdf@example.com", username="pdfuser")
+    headers = auth_header(tokens["access_token"])
+    version_id = await _create_strategy_version(client, headers)
+    bt_id = await _create_succeeded_backtest(client, headers, version_id)
+
+    pdf = await client.get(
+        f"/api/v1/backtests/{bt_id}/report", params={"format": "pdf"}, headers=headers
+    )
+    assert pdf.status_code == 200, pdf.text
+    assert pdf.headers.get("content-type", "").startswith("application/pdf")
+    assert pdf.content[:4] == b"%PDF"
+
+    share = await client.post(
+        f"/api/v1/backtests/{bt_id}/share",
+        json={"expires_in": 3600},
+        headers=headers,
+    )
+    assert share.status_code == 200, share.text
+    token = share.json()["data"]["token"]
+    assert token
+
+    public = await client.get(f"/share/reports/{token}")
+    assert public.status_code == 200
+    assert "核心绩效指标" in public.text or "回测报告" in public.text
+
+
+@pytest.mark.asyncio
 async def test_compare_backtests(client):
     await _seed_market(client)
     tokens = await register_user(client, email="cmp@example.com", username="cmpuser")

@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
 from app.core.response import success
 from app.core.security.deps import Principal, require_user_session
-from app.features.reports.schema import CompareBacktestsRequest
+from app.features.reports.schema import CompareBacktestsRequest, ShareLinkRequest
 from app.features.reports.service import ReportService
 
 router = APIRouter(tags=["Reports"])
@@ -25,10 +27,10 @@ async def get_backtest_analysis(
     return success(data.model_dump(by_alias=True))
 
 
-@router.get("/backtests/{id}/report", summary="绩效报告（HTML 导出）")
+@router.get("/backtests/{id}/report", summary="绩效报告（HTML/PDF/JSON 导出）")
 async def get_backtest_report(
     id: int,
-    format: str = Query("html", enum=["html", "json"]),
+    format: str = Query("html", enum=["html", "json", "pdf"]),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_user_session),
 ):
@@ -36,6 +38,14 @@ async def get_backtest_report(
     if format == "json":
         data = await svc.get_report(principal.user_id, id)
         return success(data.model_dump())
+    if format == "pdf":
+        pdf_bytes = await svc.render_pdf(principal.user_id, id)
+        filename = f"backtest-report-{id}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
     html = await svc.render_html(principal.user_id, id)
     filename = f"backtest-report-{id}.html"
     return HTMLResponse(
@@ -51,4 +61,16 @@ async def compare_backtests(
     principal: Principal = Depends(require_user_session),
 ) -> dict:
     data = await ReportService(session).compare(principal.user_id, payload)
+    return success(data.model_dump())
+
+
+@router.post("/backtests/{id}/share", summary="生成只读分享链接")
+async def create_share_link(
+    id: int,
+    payload: Optional[ShareLinkRequest] = None,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_user_session),
+) -> dict:
+    req = payload or ShareLinkRequest()
+    data = await ReportService(session).create_share_link(principal.user_id, id, req)
     return success(data.model_dump())

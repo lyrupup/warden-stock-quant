@@ -16,7 +16,11 @@ from app.core.engine.backtest.cost import (
     round_lot,
 )
 from app.core.engine.backtest.metrics import compute_metrics
-from app.core.engine.backtest.signals import compute_hold_states, compute_ma_trend_layers
+from app.core.engine.backtest.signals import (
+    compute_hold_states,
+    compute_ma_trend_layers,
+    select_factor_rank_codes,
+)
 from app.core.engine.backtest.types import (
     BacktestEngineInput,
     BacktestEngineOutput,
@@ -73,6 +77,9 @@ def run_backtest(
         return np.array([arr[cal_index[d]] for d in calendar], dtype=bool)
 
     use_pyramid = compiler.is_pyramid and compiler.signal_type == "ma_trend"
+    use_factor_rank = compiler.signal_type == "factor_rank"
+    if use_factor_rank and not inp.factor_matrix:
+        raise ValueError("factor_rank 信号缺少因子数据")
     pyramid_states: dict[str, _PyramidState] = {}
     entry_states: dict[str, np.ndarray] = {}
     add_states: dict[str, np.ndarray] = {}
@@ -90,7 +97,7 @@ def run_backtest(
             add_states[code] = _align(lyr["add"])
             trend_states[code] = _align(lyr["trend"])
             pyramid_states[code] = _PyramidState()
-    else:
+    elif not use_factor_rank:
         states_full = compute_hold_states(
             compiler.primary_signal, compiler.params, inp.bars_by_code, full_calendar
         )
@@ -156,6 +163,16 @@ def run_backtest(
                     i, entry_states, add_states, trend_states,
                     pyramid_states, portfolio, scale_in, compiler.max_n,
                 )
+            elif use_factor_rank:
+                full_idx = cal_index[dt]
+                picks = select_factor_rank_codes(
+                    inp.factor_matrix or {},
+                    full_calendar,
+                    full_idx,
+                    inp.factor_top,
+                    compiler.max_n,
+                )
+                pending_targets = _weights_from_picks(picks, portfolio)
             else:
                 pending_targets = _target_weights(
                     dt, states, compiler.max_n, portfolio, calendar, i
@@ -190,6 +207,19 @@ def _is_rebalance_day(dt: date, calendar: list[date], i: int, freq: str) -> bool
             return True
         return dt.month != calendar[i - 1].month
     return True
+
+
+def _weights_from_picks(picks: list[str], portfolio: _Portfolio) -> dict[str, float]:
+    targets = {code: 0.0 for code in portfolio.holdings}
+    if not picks:
+        return targets
+    w = 1.0 / len(picks)
+    for code in picks:
+        targets[code] = w
+    for code in picks:
+        if code not in targets:
+            targets[code] = w
+    return targets
 
 
 def _target_weights(

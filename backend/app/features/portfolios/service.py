@@ -1,0 +1,213 @@
+"""M7 组合业务编排。"""
+
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+from typing import Any, Optional
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.engine.backtest.compiler import ConfigStrategyCompiler
+from app.core.engine.backtest.data_loader import bar_row_to_data, resolve_universe_codes
+from app.core.engine.backtest.signals import compute_factor_rank_states, compute_hold_states
+from app.core.engine.factor.compute import compute_factor_matrix
+from app.core.data.feed.pg_feed import PgDataFeed
+from app.core.errors import ConflictError, ForbiddenError, NotFoundError, ValidationFailedError
+from app.features.portfolios.models import Portfolio
+from app.features.portfolios.repository import PortfolioRepository
+from app.features.portfolios.schema import PortfolioUpsert, PortfolioView, PositionView, RebalanceResultView
+from app.features.strategies.repository import StrategyRepository
+
+
+class PortfolioService:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._repo = PortfolioRepository(session)
+        self._strategy_repo = StrategyRepository(session)
+
+    def _to_view(self, p: Portfolio) -> dict:
+        return PortfolioView(
+            id=p.id,
+            name=p.name,
+            mode=p.mode,
+            strategy_version_id=p.strategy_version_id,
+            init_capital=p.init_capital,
+            cash=p.cash,
+            benchmark=p.benchmark,
+            rebalance=p.rebalance,
+            weight_scheme=p.weight_scheme,
+            risk_rule_set_id=p.risk_rule_set_id,
+            status=p.status,
+            created_at=p.created_at,
+        ).model_dump()
+
+    async def list_portfolios(self, user_id: int, page: int, size: int) -> tuple[list[dict], int]:
+        rows, total = await self._repo.list_by_user(user_id, page, size)
+        return [self._to_view(r) for r in rows], total
+
+    async def get_portfolio(self, user_id: int, portfolio_id: int) -> dict:
+        p = await self._require_owned(portfolio_id, user_id)
+        return self._to_view(p)
+
+    async def create_portfolio(self, user_id: int, payload: PortfolioUpsert) -> dict:
+        if payload.mode == "live":
+            raise ForbiddenError("实盘组合需管理员授权")
+        existing = await self._repo.get_by_name(user_id, payload.name)
+        if existing:
+            raise ConflictError("同名组合已存在")
+        if payload.strategy_version_id:
+            ver = await self._strategy_repo.get_version_owned(
+                payload.strategy_version_id, user_id
+            )
+            if ver is None:
+                raise NotFoundError("策略版本不存在")
+        p = Portfolio(
+            user_id=user_id,
+            name=payload.name,
+            mode=payload.mode,
+            strategy_version_id=payload.strategy_version_id,
+            init_capital=Decimal(str(payload.init_capital)),
+            cash=Decimal(str(payload.init_capital)),
+            benchmark=payload.benchmark,
+            rebalance=payload.rebalance,
+            weight_scheme=payload.weight_scheme,
+            risk_rule_set_id=payload.risk_rule_set_id,
+        )
+        await self._repo.add(p)
+        return self._to_view(p)
+
+    async def delete_portfolio(self, user_id: int, portfolio_id: int) -> None:
+        p = await self._require_owned(portfolio_id, user_id)
+        await self._repo.delete(p)
+
+    async def list_positions(self, user_id: int, portfolio_id: int) -> list[dict]:
+        await self._require_owned(portfolio_id, user_id)
+        rows = await self._repo.list_positions(portfolio_id)
+        return [
+            PositionView.model_validate(r, from_attributes=True).model_dump() for r in rows
+        ]
+
+    async def rebalance(self, user_id: int, portfolio_id: int) -> dict:
+        """根据关联策略生成目标权重并更新仿真持仓（Paper 口径）。"""
+        p = await self._require_owned(portfolio_id, user_id)
+        if not p.strategy_version_id:
+            raise ValidationFailedError("组合未关联策略版本，无法再平衡")
+
+        pair = await self._strategy_repo.get_version_owned(p.strategy_version_id, user_id)
+        if pair is None:
+            raise NotFoundError("策略版本不存在")
+        _strategy, version = pair
+        config = version.config or {}
+        if not config:
+            raise ValidationFailedError("策略配置为空")
+
+        feed = PgDataFeed(self._session)
+        status = await feed.dataset_status()
+        latest_str = status.get("bars_updated_to") or status.get("latest_trade_date")
+        if not latest_str:
+            raise ValidationFailedError("交易日历为空，请先同步数据集")
+        trade_date = date.fromisoformat(latest_str)
+        calendar = await feed.trading_calendar(
+            trade_date.replace(year=trade_date.year - 1), trade_date
+        )
+        if not calendar:
+            raise ValidationFailedError("交易日历为空")
+
+        universe = version.universe or {"type": "all"}
+        codes = await resolve_universe_codes(self._session, universe, max_codes=50)
+        warmup_start = trade_date.replace(year=trade_date.year - 1)
+        bars_by_code = {}
+        for code in codes:
+            rows = await feed.get_bars(code, warmup_start, trade_date, adjust="qfq")
+            if rows:
+                bars_by_code[code] = bar_row_to_data(code, rows)
+        if not bars_by_code:
+            raise ValidationFailedError("无可用行情，无法再平衡")
+
+        full_calendar = sorted({d for bars in bars_by_code.values() for d in bars.dates})
+        compiler = ConfigStrategyCompiler(config, {})
+        selected: list[str] = []
+
+        if compiler.signal_type == "factor_rank":
+            sig = compiler.primary_signal
+            factor_name = str(sig.get("factor", "momentum_20"))
+            top = float(sig.get("top", 0.1))
+            matrix = compute_factor_matrix(
+                bars_by_code, full_calendar, factor_name, version.default_params, 1
+            )
+            states = compute_factor_rank_states(sig, matrix, full_calendar, trade_date, top)
+            selected = [c for c, hold in states.items() if hold]
+        elif compiler.supported():
+            states_full = compute_hold_states(
+                compiler.primary_signal, {}, bars_by_code, full_calendar
+            )
+            cal_idx = full_calendar.index(trade_date)
+            selected = [c for c, arr in states_full.items() if arr[cal_idx]]
+        else:
+            raise ValidationFailedError(f"暂不支持的策略信号: {compiler.signal_type}")
+
+        max_n = compiler.max_n
+        selected = selected[:max_n] if selected else list(bars_by_code.keys())[:max_n]
+        if not selected:
+            raise ValidationFailedError("未选出任何标的")
+
+        weight = 1.0 / len(selected)
+        total_capital = float(p.cash) + sum(
+            float(pos.market_value or 0)
+            for pos in await self._repo.list_positions(portfolio_id)
+        )
+        targets: list[dict[str, Any]] = []
+        orders: list[dict[str, Any]] = []
+        remaining_cash = Decimal(str(total_capital))
+
+        for code in selected:
+            bars = bars_by_code.get(code)
+            if not bars:
+                continue
+            price_map = {d: bars.close[i] for i, d in enumerate(bars.dates)}
+            price = price_map.get(trade_date, bars.close[-1])
+            target_value = total_capital * weight
+            qty = int(target_value / price / 100) * 100
+            if qty <= 0:
+                continue
+            amount = Decimal(str(round(qty * price, 4)))
+            targets.append({"code": code, "weight": weight, "target_qty": qty, "price": price})
+            orders.append(
+                {
+                    "code": code,
+                    "side": "buy",
+                    "qty": qty,
+                    "price": price,
+                    "amount": float(amount),
+                    "status": "simulated",
+                }
+            )
+            await self._repo.upsert_position(
+                portfolio_id,
+                code,
+                qty=qty,
+                avail_qty=0,
+                cost=amount,
+                last_price=Decimal(str(round(price, 4))),
+                market_value=amount,
+                pnl=Decimal("0"),
+            )
+            remaining_cash -= amount
+
+        p.cash = max(remaining_cash, Decimal("0"))
+        await self._session.flush()
+
+        result = RebalanceResultView(
+            trade_date=trade_date.isoformat(),
+            targets=targets,
+            orders=orders,
+            message=f"已按等权再平衡至 {len(targets)} 只标的（仿真持仓已更新）",
+        )
+        return result.model_dump()
+
+    async def _require_owned(self, portfolio_id: int, user_id: int) -> Portfolio:
+        p = await self._repo.get_owned(portfolio_id, user_id)
+        if p is None:
+            raise NotFoundError("组合不存在")
+        return p

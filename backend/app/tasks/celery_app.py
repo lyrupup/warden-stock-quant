@@ -22,6 +22,7 @@ celery_app = Celery(
     include=[
         "app.tasks.data_tasks",
         "app.tasks.backtest_tasks",
+        "app.tasks.factor_tasks",
     ],
 )
 
@@ -52,3 +53,7 @@ from app.features.users import models as _users_models  # noqa: E402,F401
 from app.features.datasets import models as _datasets_models  # noqa: E402,F401
 from app.features.strategies import models as _strategies_models  # noqa: E402,F401
 from app.features.backtests import models as _backtests_models  # noqa: E402,F401
+from app.features.factors import models as _factors_models  # noqa: E402,F401
+from app.features.portfolios import models as _portfolios_models  # noqa: E402,F401
+from app.features.alerts import models as _alerts_models  # noqa: E402,F401
+from app.features.reports import models as _reports_models  # noqa: E402,F401

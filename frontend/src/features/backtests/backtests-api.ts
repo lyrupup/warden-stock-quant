@@ -47,6 +47,24 @@ export const backtestsApi = {
     URL.revokeObjectURL(url);
   },
 
+  downloadReportPdf: async (id: number) => {
+    const res = await api.get(`backtests/${id}/report`, {
+      searchParams: { format: "pdf" },
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `backtest-report-${id}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+
+  createShareLink: (id: number, expiresIn = 86400) =>
+    unwrap<{ url: string; token: string; expires_at: string }>(
+      api.post(`backtests/${id}/share`, { json: { expires_in: expiresIn } }),
+    ),
+
   metrics: (id: number) => unwrap<TBacktestMetrics>(api.get(`backtests/${id}/metrics`)),
 
   equity: (id: number) => unwrap<TEquityPoint[]>(api.get(`backtests/${id}/equity`)),

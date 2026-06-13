@@ -267,6 +267,7 @@ async def execute_backtest(session: AsyncSession, backtest_id: int) -> dict:
             params=bt.params,
             benchmark=bt.benchmark,
             max_codes=MAX_UNIVERSE_CODES,
+            user_id=bt.user_id,
         )
 
         cancel_flag = {"v": False}

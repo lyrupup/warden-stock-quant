@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { Ban, Download, Loader2 } from "lucide-react";
+import { Ban, Download, Link2, Loader2 } from "lucide-react";
 import { describeError } from "@/core/http";
 import { fmtDate, fmtMoney, fmtNum, fmtPct, toNum } from "@/core/lib";
 import { BarChart, LineChart } from "@/core/charts";
@@ -359,7 +359,22 @@ export function BacktestDetail({ backtestId }: TBacktestDetailProps) {
 
   const downloadReportMutation = useMutation({
     mutationFn: () => backtestsApi.downloadReportHtml(backtestId),
-    onSuccess: () => toast.success("报告已下载"),
+    onSuccess: () => toast.success("HTML 报告已下载"),
+    onError: (err) => toast.error(describeError(err)),
+  });
+
+  const downloadPdfMutation = useMutation({
+    mutationFn: () => backtestsApi.downloadReportPdf(backtestId),
+    onSuccess: () => toast.success("PDF 报告已下载"),
+    onError: (err) => toast.error(describeError(err)),
+  });
+
+  const shareMutation = useMutation({
+    mutationFn: () => backtestsApi.createShareLink(backtestId),
+    onSuccess: (data) => {
+      void navigator.clipboard.writeText(data.url);
+      toast.success("分享链接已复制到剪贴板");
+    },
     onError: (err) => toast.error(describeError(err)),
   });
 
@@ -405,19 +420,38 @@ export function BacktestDetail({ backtestId }: TBacktestDetailProps) {
           <div className="flex items-center gap-3">
             <BacktestStatusBadge status={bt.status} />
             {done && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => downloadReportMutation.mutate()}
-                disabled={downloadReportMutation.isPending}
-              >
-                {downloadReportMutation.isPending ? (
-                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                ) : (
-                  <Download className="mr-1 h-4 w-4" />
-                )}
-                导出报告
-              </Button>
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => downloadReportMutation.mutate()}
+                  disabled={downloadReportMutation.isPending}
+                >
+                  {downloadReportMutation.isPending ? (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="mr-1 h-4 w-4" />
+                  )}
+                  HTML
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => downloadPdfMutation.mutate()}
+                  disabled={downloadPdfMutation.isPending}
+                >
+                  PDF
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => shareMutation.mutate()}
+                  disabled={shareMutation.isPending}
+                >
+                  <Link2 className="mr-1 h-4 w-4" />
+                  分享
+                </Button>
+              </>
             )}
             {(bt.status === "queued" || bt.status === "running") && (
               <Button

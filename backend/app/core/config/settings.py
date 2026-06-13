@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     # 测试 / 覆盖：显式数据库 URL（如 sqlite+aiosqlite），优先级最高
     database_url: Optional[str] = None
 
+    # 前端公开 URL（分享链接）
+    public_base_url: str = "http://localhost:5173"
+
     @property
     def sqlalchemy_database_uri(self) -> str:
         """异步 SQLAlchemy 连接串；存在 database_url 时优先使用。"""

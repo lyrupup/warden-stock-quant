@@ -95,6 +95,8 @@ class BacktestEngineInput:
     benchmark_bars: Optional[BarData] = None
     bars_by_code: dict[str, BarData] = field(default_factory=dict)
     calendar: list[date] = field(default_factory=list)
+    factor_matrix: Optional[dict[str, Any]] = None
+    factor_top: float = 0.1
 
 
 @dataclass
