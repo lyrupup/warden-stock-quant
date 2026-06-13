@@ -167,7 +167,64 @@ run_backtest(backtest_id):
 }
 ```
 
+内置信号积木（`signals[].type`）：
+
+| 类型 | 含义 | 关键参数 |
+|------|------|----------|
+| `ma_cross` | 双均线金叉/死叉 | `fast` < `slow` |
+| `ma_trend` | 均线多头排列趋势（分层启动→建仓→加仓） | `launch` / `tiers` / `slope_ma` |
+| `factor_rank` | 因子排名选股 | `factor`、`top∈(0,1]` |
+| `rsi` | RSI 超买超卖 | `period` |
+| `bollinger` | 布林带均值回归 | `period`、`std` |
+| `macd` | MACD 金叉/死叉 | `fast`/`slow`/`signal` |
+
+仓位 `position.scheme`：`equal_weight`/`market_cap`/`factor_weight`/`risk_parity`/`pyramid`（金字塔加仓）。
+止损止盈 `stop`：`stop_loss`/`take_profit`/`trailing`（移动止盈），均为 (0,1) 小数。
+
 `ConfigStrategyCompiler` 将其转为 `next()` 逻辑：到再平衡日 → 计算信号 → 目标持仓 → 下单（过风控）。这保证非程序员用户也能安全建策略。
+
+### 4.4.1 ma_trend 多头排列趋势 + 金字塔加仓（趋势跟踪范式）
+
+针对「底部启动 → 均线逐级多头排列 → 主升浪」的右侧趋势打法，`ma_trend` 用**启动质量过滤（launch）+ 分层排列确认（tiers）**两段刻画，配合 `position.scale_in` 实现浮盈金字塔加仓：
+
+```jsonc
+{
+  "signals": [
+    {
+      "type": "ma_trend",
+      // 启动质量：沿 MA5「附近」(乖离率带) +「稳步推升」(斜率/站上占比)
+      "launch": {
+        "bias_ma": 5,
+        "bias_range": [0.0, 0.08],   // BIAS5∈[0,8%]：站上 MA5 但不过度乖离（不追高）
+        "slope_ma": 5, "slope_window": 5,   // MA5 斜率>0：在推升
+        "above_ma": 5, "above_ratio": 0.8, "above_window": 10  // 近10日≥80%收在MA5上：稳
+      },
+      // 分层排列：短期打开=建仓许可，中期打开=加仓确认
+      "tiers": [
+        { "mas": [5, 10, 20], "role": "entry" },   // MA5>MA10>MA20 短期多头 → 建仓
+        { "mas": [20, 30, 40], "role": "add" }     // MA20>MA30>MA40 中期多头 → 加仓
+      ],
+      "slope_ma": 20, "slope_window": 5
+    }
+  ],
+  "rebalance": { "freq": "day" },
+  "position": {
+    "scheme": "pyramid", "max_n": 10,
+    "scale_in": {
+      "init_weight": 0.4,        // 建仓 40%
+      "observe_days": 3,         // 观察 3 日
+      "add_steps": 2,            // 最多加仓 2 档
+      "add_weight": 0.3,         // 每档 +30%（总仓 ≤ 100%）
+      "trigger": "medium_align"  // 触发：中期多头排列形成（仍可选 trend_up/new_high/above_ma5）
+    }
+  },
+  "stop": { "stop_loss": 0.08, "trailing": 0.12 }   // 硬止损 8% + 移动止盈 12%
+}
+```
+
+- **量化「沿 MA5 附近稳步推升」**：`launch.bias_range` 用乖离率约束「附近」；`slope_ma` + `above_ratio` 联合刻画「稳步推升」（仅乖离率不足以区分"稳步上行"与"贴 MA5 震荡"）。
+- **校验约束**：`tiers` 须含 `role=entry`；`mas` 升序（短周期在前）；`init_weight + add_steps×add_weight ≤ 1`（总仓不超 100%）。
+- 内置模板 `trend_pyramid` 即此范式，前端「模板库」可一键派生；编辑器以高层旋钮（乖离率上限/观察天数/加仓档数/移动止盈）暴露，均线阶梯固定。
 
 ### 4.5 代码式策略沙箱
 
