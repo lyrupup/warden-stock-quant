@@ -175,7 +175,7 @@ run_backtest(backtest_id):
 |------|------|----------|
 | `ma_cross` | 双均线金叉/死叉 | `fast` < `slow` |
 | `ma_trend` | 均线多头排列趋势（分层启动→建仓→加仓） | `launch` / `tiers` / `slope_ma` |
-| `factor_rank` | 因子排名选股 | `factor`、`top∈(0,1]` |
+| `factor_rank` | 因子排名选股（待 M6 因子数据） | `factor`、`top∈(0,1]` |
 | `rsi` | RSI 超买超卖 | `period` |
 | `bollinger` | 布林带均值回归 | `period`、`std` |
 | `macd` | MACD 金叉/死叉 | `fast`/`slow`/`signal` |
@@ -237,8 +237,10 @@ run_backtest(backtest_id):
 
 ### 4.6 参数寻优
 
-- 网格/随机搜索：生成参数组合 → 批量 `run_backtest`（可用 vectorbt 加速纯向量化策略）→ 汇总指标表。
-- **过拟合提示**：样本内/样本外（IS/OOS）拆分、参数平台稳定性、提示「最优解周围是否平滑」。
+- **网格/随机搜索**：`param_space` 笛卡尔积或随机抽样 → 批量 `run_backtest`（仅落指标，不落逐日序列）→ 按 `objective` 排序汇总。
+- **样本内外（IS/OOS）**：`oos_split` 按比例拆分区间，分别计算指标；最优解同时输出 OOS 表现。
+- **过拟合提示**：`summary` 含参数平台稳定性（`stability`）、IS/OOS 一致性（`oos_consistent`）、过拟合警告（`overfit_warning`）。
+- **API**：`POST /optimizations` 异步提交；`GET /optimizations/{id}/results` 获取排名表；组合数上限 200。
 
 ---
 

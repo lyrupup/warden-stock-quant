@@ -412,20 +412,48 @@ paths:
       summary: 每日持仓
       responses: { "200": { $ref: "#/components/responses/ListOk" } }
   /optimizations:
+    get:
+      tags: [Backtests]
+      summary: 参数寻优列表
+      parameters:
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Size" }
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
     post:
       tags: [Backtests]
-      summary: 参数寻优（批量回测，异步）
+      summary: 创建参数寻优（网格/随机搜索 + 批量回测，异步）
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              allOf:
-                - $ref: "#/components/schemas/BacktestCreate"
-                - properties:
-                    param_grid: { type: object, additionalProperties: { type: array, items: {} } }
-                    method: { type: string, enum: [grid, random], default: grid }
+            schema: { $ref: "#/components/schemas/OptimizationCreate" }
       responses: { "200": { $ref: "#/components/responses/JobAccepted" } }
+  /optimizations/{id}:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Backtests]
+      summary: 寻优任务详情与进度
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - properties: { data: { $ref: "#/components/schemas/Optimization" } }
+  /optimizations/{id}/results:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    get:
+      tags: [Backtests]
+      summary: 寻优结果汇总（按目标指标排序）
+      responses: { "200": { $ref: "#/components/responses/ListOk" } }
+  /optimizations/{id}/cancel:
+    parameters: [{ $ref: "#/components/parameters/IdPath" }]
+    post:
+      tags: [Backtests]
+      summary: 取消寻优
+      responses: { "200": { $ref: "#/components/responses/Ok" } }
 
   # ==================== Reports ====================
   /backtests/{id}/report:
@@ -1043,6 +1071,65 @@ components:
         alpha: { $ref: "#/components/schemas/Decimal" }
         beta: { $ref: "#/components/schemas/Decimal" }
         info_ratio: { $ref: "#/components/schemas/Decimal" }
+    OptimizationCreate:
+      type: object
+      required: [strategy_version_id, param_space, date_from, date_to, init_capital]
+      properties:
+        name: { type: string }
+        strategy_version_id: { type: integer }
+        param_space:
+          type: object
+          additionalProperties:
+            type: array
+            items: {}
+          description: '参数空间，如 {"fast":[3,5,8],"slow":[15,20,30]}'
+        method: { type: string, enum: [grid, random], default: grid }
+        n_iter: { type: integer, default: 20, maximum: 500 }
+        objective: { type: string, default: sharpe }
+        oos_split: { type: number, default: 0, maximum: 0.8 }
+        universe: { $ref: "#/components/schemas/Universe" }
+        date_from: { type: string, format: date }
+        date_to: { type: string, format: date }
+        init_capital: { type: number }
+        benchmark: { type: string, default: "000300" }
+        adjust: { type: string, default: qfq }
+        cost_config: { type: object }
+    Optimization:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        status: { type: string, enum: [queued, running, succeeded, failed, canceled] }
+        progress: { $ref: "#/components/schemas/Decimal" }
+        job_id: { type: string }
+        strategy_version_id: { type: integer }
+        strategy_name: { type: string, nullable: true }
+        strategy_version: { type: integer, nullable: true }
+        method: { type: string, enum: [grid, random] }
+        objective: { type: string }
+        oos_split: { $ref: "#/components/schemas/Decimal" }
+        total_combos: { type: integer }
+        param_space: { type: object }
+        date_from: { type: string, format: date }
+        date_to: { type: string, format: date }
+        init_capital: { $ref: "#/components/schemas/Decimal" }
+        benchmark: { type: string }
+        adjust: { type: string }
+        summary:
+          type: object
+          description: 过拟合诊断与最优参数汇总
+        error: { type: string }
+        created_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+    OptimizationResult:
+      type: object
+      properties:
+        id: { type: integer }
+        params: { type: object }
+        objective_value: { $ref: "#/components/schemas/Decimal" }
+        is_metrics: { $ref: "#/components/schemas/BacktestMetrics" }
+        oos_metrics: { $ref: "#/components/schemas/BacktestMetrics" }
+        rank: { type: integer }
     EquityPoint:
       type: object
       properties:
